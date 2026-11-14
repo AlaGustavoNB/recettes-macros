@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tests appli recettes</title>
+<style>body{font:15px/1.4 system-ui;margin:16px;background:#fff;color:#111}.ok{color:#1d5c3f}.ko{color:#b00020;font-weight:700}pre{white-space:pre-wrap}</style>
+</head><body>
+<h1>Tests</h1><div id="sum"></div><pre id="out"></pre>
+<script src="../web/calc.js"></script>
+<script src="../web/demo-data.js"></script>
+<script>
+var out = [], fails = 0, passes = 0;
+function ok(cond, label, extra) {
+  if (cond) passes++; else fails++;
+  out.push((cond ? '✔ ' : '✘ ') + label + (extra !== undefined ? '  → ' + JSON.stringify(extra) : ''));
+}
+function near(a, b, tol) { return Math.abs(a - b) <= (tol || 1e-6); }
+var C = Calc, D = JSON.parse(JSON.stringify(DEMO_DATA)), idx = C.index(D.ingredients);
+var ex = D.recipes[0];
+
+/* 1. Recette d'exemple */
+var t = C.recipeTotals(ex, idx).portion;
+ok(near(t.kcal, 528.75), 'Exemple : 528,75 kcal', t.kcal);
+ok(near(t.p, 44.325), 'Exemple : 44,3 g de protéines', t.p);
+ok(near(Math.round(t.cost * 100) / 100, 2.11), 'Exemple : 2,11 € par portion', t.cost);
+ok(near(t.g, 64.5) && near(t.l, 8.525) && near(t.f, 5.55), 'Exemple : glucides 64,5 / lipides 8,525 / fibres 5,55');
+
+/* 2. Rôles proposés */
+var roles = D.ingredients.slice(0, 4).map(C.roleOf);
+ok(JSON.stringify(roles) === JSON.stringify(['glucide', 'protéine', 'légume', 'lipide']), 'Rôles par défaut riz/poulet/brocoli/huile', roles);
+ok(C.rayonOf(D.ingredients[1]) === 'viandes' && C.rayonOf(D.ingredients[0]) === 'féculents', 'Rayons par défaut');
+
+/* 3. Protéines fixes : 700 kcal */
+var a = C.adjust(ex, idx, { kcal: 700, protRef: 45, margin: 0.10 });
+var q = {}; a.items.forEach(function (i) { q[i.name] = i.qty; });
+ok(a.status === 'ok', 'Ajustement 700 kcal possible', a.status);
+ok(near(a.totals.kcal, 700, 1e-6), '700 kcal atteintes', a.totals.kcal);
+ok(near(q['Filet de poulet cru'], 150) && near(q['Brocoli cuit'], 150), 'Poulet et brocoli gardés à 150 g');
+ok(near(q['Riz basmati cru'] / 75, q["Huile d'olive"] / 5, 1e-9) && q['Riz basmati cru'] > 75, 'Riz et huile ajustés ensemble', q);
+ok(a.protStatus === 'ok', 'Protéines dans la marge de 10 %', a.totals.p);
+
+/* 4. Marge 5 % */
+var a5 = C.adjust(ex, idx, { kcal: 900, protRef: 45, margin: 0.05 });
+ok(a5.protStatus === 'hors' && a5.messages.join(' ').indexOf('hors marge') >= 0, 'Marge 5 % : signalé clairement hors marge à 900 kcal', a5.totals.p);
+
+/* 5. Limite basse et alternatives à 300 kcal */
+var lo = C.adjust(ex, idx, { kcal: 250, protRef: 45, margin: 0.10 });
+ok(lo.status === 'low', 'Sous la limite basse : avertissement (pas de réduction silencieuse)', lo.status);
+ok(near(lo.items.filter(function (i) { return i.name === 'Filet de poulet cru'; })[0].qty, 150), 'Protéines non réduites sous la limite');
+var alts = C.alternatives(ex, idx, { kcal: 300, margin: 0.10 });
+var none = C.alternatives(ex, idx, { kcal: 200, margin: 0.10 });
+ok(none.length === 0, 'Impossible à 200 kcal : aucune fausse alternative', none.length);
+ok(alts.length >= 1, 'Au moins une alternative à 300 kcal', alts.map(function (x) { return x.replaced + ' > ' + x.by + ' ' + Math.round(x.byQty) + ' g'; }));
+ok(alts.every(function (x) { return Math.abs(x.after.kcal - 300) / 300 <= 0.10 + 1e-9 && Math.abs(x.after.p - t.p) / t.p <= 0.10 + 1e-9; }),
+  'Chaque alternative garde protéines et kcal dans la marge');
+ok(alts.every(function (x) { return x.before && x.after && 'g' in x.after && 'l' in x.after; }), 'Avant/après fournis (kcal, P, G, L)');
+var alts2 = C.alternatives(ex, idx, { kcal: 300, margin: 0.05 });
+ok(alts2.every(function (x) { return Math.abs(x.after.kcal - 300) / 300 <= 0.05 + 1e-9; }), 'Alternatives avec marge 5 %', alts2.length);
+
+/* 6. Recette sans glucide ni lipide ajustable */
+var pure = { name: 'Poulet seul', portions: 1, lines: [{ ing: 'Filet de poulet cru', qty: 200 }] };
+ok(C.adjust(pure, idx, { kcal: 500, margin: .1 }).status === 'impossible', 'Recette non ajustable : signalée impossible');
+
+/* 7. Pesée cru/cuit : 4 tacos, 400 g de viande crue, 300 g cuite */
+var tacos = D.recipes[1];
+var at = C.adjust(tacos, idx, { kcal: null });
+var cp = C.cookPlan(at, 4, { 'Bœuf haché 5 % cru (démo)': 300 });
+var beef = cp.filter(function (x) { return x.name.indexOf('Bœuf') === 0; })[0];
+ok(near(beef.raw, 400) && near(beef.perPortionCooked, 75), '4 tacos : 400 g cru → 300 g cuit → 75 g par taco', beef);
+var tom = cp.filter(function (x) { return x.name.indexOf('Tomate') === 0; })[0];
+ok(tom.isRaw && !tom.cooked, 'Aucun coefficient cru/cuit supposé sans pesée');
+var at6 = C.adjust(tacos, idx, { kcal: null }); var cp6 = C.cookPlan(at6, 6, {});
+ok(near(cp6[0].raw, 600), '6 portions : 600 g de viande crue à peser', cp6[0].raw);
+
+/* 8. Planning en texte libre */
+var pl = C.parsePlan('trois soirs poulet-riz, deux soirs tacos, sept midis cabillaud', D.recipes);
+var m = {}; pl.items.forEach(function (i) { m[i.recipe] = i.meals; });
+ok(m['Poulet riz brocoli (exemple)'] === 3 && m['Tacos bœuf (démo)'] === 2 && m['Cabillaud patate douce (démo)'] === 7, 'Planning dicté reconnu (3, 2, 7)', m);
+var pl2 = C.parsePlan('3 poulet riz et 2 tacos\n1 truc inconnu', D.recipes);
+ok(pl2.items.length === 2 && pl2.unknown.length === 1, 'Chiffres + « et » + élément inconnu signalé', pl2);
+
+/* 9. Liste de courses */
+var stock = { 'Riz basmati cru': 500, "Huile d'olive": 200 };
+var L = C.shoppingList([{ recipe: ex.name, meals: 3, kcal: null }, { recipe: 'Cabillaud patate douce (démo)', meals: 2, kcal: null }], D.recipes, idx,
+  { protRef: null, margin: .1, stock: stock, useStock: true });
+var byN = {}; L.lines.forEach(function (l) { byN[l.name] = l; });
+ok(near(byN['Riz basmati cru'].need, 225) && byN['Riz basmati cru'].buy === 0, 'Stock retranché : riz 225 g nécessaires, 500 en stock → 0', byN['Riz basmati cru']);
+ok(near(byN['Filet de poulet cru'].buy, 450) && near(byN['Filet de poulet cru'].cost, 4.275), 'Poulet 3 repas : 450 g, 4,28 €', byN['Filet de poulet cru']);
+ok(near(byN["Huile d'olive"].need, 15 + 10), 'Ingrédients identiques additionnés (huile 15 + 10 g)', byN["Huile d'olive"].need);
+ok(byN['Haricots verts cuits (démo)'].cost === null && L.missingPrice.indexOf('Haricots verts cuits (démo)') >= 0, 'Prix manquant signalé, pas estimé');
+var order = L.lines.map(function (l) { return C.RAYONS.indexOf(l.rayon); });
+ok(order.every(function (v, i) { return i === 0 || v >= order[i - 1]; }), 'Liste triée par rayon', L.lines.map(function (l) { return l.rayon; }));
+var expected = L.lines.reduce(function (s, l) { return s + (l.cost || 0); }, 0);
+ok(near(L.total, expected), 'Total de la semaine = somme des lignes', L.total);
+var L2 = C.shoppingList([{ recipe: ex.name, meals: 2, kcal: 700 }], D.recipes, idx, { margin: .1, stock: {}, useStock: false });
+var rice2 = L2.lines.filter(function (l) { return l.name === 'Riz basmati cru'; })[0];
+ok(rice2.need > 150 && near(L2.lines.filter(function (l) { return l.name === 'Filet de poulet cru'; })[0].need, 300), 'Recalcul kcal appliqué avant la liste (riz augmenté, poulet fixe)', rice2.need);
+
+/* 10. Lecture d'étiquette */
+var lab = 'Skyr nature\nValeurs nutritionnelles pour 100 g\nÉnergie 263 kJ / 62 kcal\nMatières grasses 0,2 g\ndont acides gras saturés 0,1 g\nGlucides 3,6 g\ndont sucres 3,6 g\nFibres alimentaires 0 g\nProtéines 11 g\nSel 0,1 g';
+var n = C.parseNutrition(lab);
+ok(n.kcal === 62 && n.p === 11 && n.g === 3.6 && n.l === 0.2 && n.f === 0 && n.name === 'Skyr nature', 'Étiquette lue (62 kcal, P 11, G 3,6, L 0,2, F 0)', n);
+var lab2 = 'Pâtes complètes\nPour 100 g\nÉnergie\n1480 kJ\n350 kcal\nMatières grasses\n2,5 g\ndont acides gras saturés\n0,5 g\nGlucides\n64 g\ndont sucres\n3 g\nFibres\n7 g\nProtéines\n13 g';
+var n2 = C.parseNutrition(lab2);
+ok(n2.kcal === 350 && n2.p === 13 && n2.g === 64 && n2.l === 2.5 && n2.f === 7, 'Étiquette en colonnes (valeur sous le libellé)', n2);
+var n3 = C.parseNutrition('Énergie 1500 kJ\nProtéines <0,5 g');
+ok(n3.kcal === 359 && n3.p === 0, 'kJ seul → kcal ; « <0,5 » → 0', n3);
+ok(C.parsePrice('Prix au kg : 2,15 €').prixKg === 2.15, 'Prix au kg lu');
+ok(C.parsePrice('12,90 €/kg').prixKg === 12.9, 'Format 12,90 €/kg');
+ok(C.parsePrice('Poulet 500 g 4,75 €').prixKg === 9.5, 'Prix calculé à partir du prix et du poids écrits');
+ok(C.parsePrice('Promo !').prixKg === null, 'Pas de prix inventé');
+
+/* 11. Stock dicté */
+var ps = C.parseStock('500 g de riz basmati cru, 1 kg de filet de poulet', D.ingredients);
+ok(ps.items.length === 2 && ps.items[1].qty === 1000 && ps.items[1].ing === 'Filet de poulet cru', 'Stock dicté reconnu', ps);
+
+/* ===== Serveur Apps Script simulé ===== */
+function runServerTests(code) {
+  var writes = [];
+  function Sheet(name, rows, formulaRows, formulaCols) {
+    this.name = name; this.rows = rows; this.fr = formulaRows || 0; this.fc = formulaCols || [];
+  }
+  Sheet.prototype.getName = function () { return this.name; };
+  Sheet.prototype.getMaxRows = function () { return Math.max(1000, this.rows.length); };
+  Sheet.prototype.getLastRow = function () {
+    var last = this.fr; // les lignes de formules comptent comme non vides
+    for (var i = this.rows.length - 1; i >= 0; i--) if (this.rows[i].some(function (v) { return v !== '' && v != null; })) { last = Math.max(last, i + 1); break; }
+    return last;
+  };
+  Sheet.prototype.cell = function (r, c) { var row = this.rows[r - 1] || []; var v = row[c - 1]; return v === undefined ? '' : v; };
+  Sheet.prototype.put = function (r, c, v) {
+    while (this.rows.length < r) this.rows.push([]);
+    this.rows[r - 1][c - 1] = v; writes.push({ sheet: this.name, r: r, c: c, v: v });
+  };
+  Sheet.prototype.getRange = function (r, c, nr, nc) {
+    var s = this; nr = nr || 1; nc = nc || 1;
+    return {
+      getValues: function () { var o = []; for (var i = 0; i < nr; i++) { var row = []; for (var j = 0; j < nc; j++) row.push(s.cell(r + i, c + j)); o.push(row); } return o; },
+      getValue: function () { return s.cell(r, c); },
+      setValues: function (v) { v.forEach(function (row, i) { row.forEach(function (x, j) { s.put(r + i, c + j, x); }); }); return this; },
+      setValue: function (v) { s.put(r, c, v); return this; },
+      clearContent: function () { for (var i = 0; i < nr; i++) for (var j = 0; j < nc; j++) s.put(r + i, c + j, ''); return this; },
+      copyFormatToRange: function () {}, setDataValidation: function () { return this; }, setFontWeight: function () { return this; }
+    };
+  };
+  Sheet.prototype.copyFormatToRange = function () {};
+  Sheet.prototype.setFrozenRows = function () {};
+  var I = [['Nom']].concat(DEMO_DATA.ingredients.slice(0, 4).map(function (i) { return [i.name, i.etat, i.kcal, i.p, i.g, i.l, i.f, i.prix, i.magasin, i.source, i.remarque]; }));
+  var R = [['Nom'], ['Poulet riz brocoli (exemple)', 1, 'Déjeuner', 'Maintien', 10, 20, 528.75, 44.325, 64.5, 8.525, 5.55, 528.75, 44.325, 64.5, 8.525, 2.11, 2.11, 'Non', 'À tester', 'OK', 'Recette d’exemple']];
+  var Lg = [['Recette'], ['Poulet riz brocoli (exemple)', 'Riz basmati cru', 75], ['Poulet riz brocoli (exemple)', 'Filet de poulet cru', 150],
+    ['Poulet riz brocoli (exemple)', 'Brocoli cuit', 150], ['Poulet riz brocoli (exemple)', "Huile d'olive", 5]];
+  var E = [['Recette'], ['Poulet riz brocoli (exemple)', 1, 'Cuire le riz', 12]];
+  var St = [['Ingrédient'], ['Riz basmati cru', 500, '', 'Stock d’exemple']];
+  var sheets = { 'Ingrédients': new Sheet('Ingrédients', I, 0), 'Recettes': new Sheet('Recettes', R, 201), 'Lignes_recette': new Sheet('Lignes_recette', Lg, 501),
+    'Étapes': new Sheet('Étapes', E, 0), 'Stock cuisine': new Sheet('Stock cuisine', St, 0) };
+  var props = {}, cache = {};
+  window.SpreadsheetApp = {
+    getActive: function () { return { getSheetByName: function (n) { return sheets[n] || null; },
+      insertSheet: function (n) { sheets[n] = new Sheet(n, [], 0); return sheets[n]; } }; },
+    newDataValidation: function () { var b = { requireValueInList: function () { return b; }, setAllowInvalid: function () { return b; }, build: function () { return {}; } }; return b; },
+    getUi: function () { throw new Error('pas d’interface'); }
+  };
+  window.PropertiesService = { getScriptProperties: function () { return {
+    getProperty: function (k) { return k in props ? props[k] : null; }, setProperty: function (k, v) { props[k] = v; } }; } };
+  window.CacheService = { getScriptCache: function () { return { get: function (k) { return cache[k] || null; }, put: function (k, v) { cache[k] = v; }, remove: function (k) { delete cache[k]; } }; } };
+  window.LockService = { getScriptLock: function () { return { tryLock: function () { return true; }, releaseLock: function () {} }; } };
+  window.Utilities = { getUuid: function () { return Math.random().toString(36).slice(2); },
+    computeHmacSha256Signature: function (s, k) { var h = 0, x = s + '|' + k; for (var i = 0; i < x.length; i++) h = (h * 31 + x.charCodeAt(i)) | 0; return String(h); },
+    base64EncodeWebSafe: function (s) { return btoa(String(s)).replace(/\+/g, '-').replace(/\//g, '_'); },
+    formatDate: function (d) { return d.toISOString().slice(0, 10); } };
+  window.ContentService = { MimeType: { JSON: 'json' }, createTextOutput: function (s) { return { s: s, setMimeType: function () { return this; } }; } };
+  window.Session = { getScriptTimeZone: function () { return 'Europe/Paris'; } };
+  window.Logger = { log: function () {} };
+  var api = new Function(code + '\nreturn { handle_: handle_, doPost: doPost };')();
+  function call(o) { return JSON.parse(api.doPost({ postData: { contents: JSON.stringify(o) } }).s); }
+
+  var d = call({ action: 'data' });
+  ok(d.ok && d.recipes.length === 1 && d.recipes[0].lines.length === 4 && d.ingredients.length === 4, 'Serveur : lecture du Sheet', d.ok);
+  ok(d.recipes[0].steps[0].timer === 12 && d.stock[0].qty === 500, 'Serveur : étapes et stock lus');
+  ok(call({ action: 'unlock', code: 'x' }).code === 'PAS_DE_CODE', 'Serveur : pas de code défini → message clair');
+  props.ADMIN_CODE = 'secret42';
+  ok(call({ action: 'addIngredient', ingredient: { name: 'X' } }).code === 'NON_AUTORISE', 'Serveur : écriture refusée sans code');
+  ok(call({ action: 'unlock', code: 'faux' }).code === 'CODE_FAUX', 'Serveur : mauvais code refusé');
+  var u = call({ action: 'unlock', code: 'secret42' });
+  ok(u.ok && u.token && u.token.indexOf('secret42') < 0, 'Serveur : bon code → jeton (sans le code dedans)');
+  var tk = u.token;
+  ok(call({ action: 'check', token: tk }).admin === true && call({ action: 'check', token: tk + 'x' }).admin === false, 'Serveur : jeton vérifié, jeton modifié refusé');
+  for (var i = 0; i < 5; i++) call({ action: 'unlock', code: 'nope' });
+  ok(call({ action: 'unlock', code: 'secret42' }).code === 'BLOQUE', 'Serveur : blocage après 5 essais faux');
+  cache = {};
+  writes.length = 0;
+  ok(call({ action: 'addIngredient', token: tk, ingredient: { name: 'riz basmati CRU', kcal: 1, p: 1, g: 1, l: 1 } }).code === 'DOUBLON', 'Serveur : doublon détecté (casse/accents)');
+  var ai = call({ action: 'addIngredient', token: tk, ingredient: { name: 'Skyr nature', etat: 'Autre', kcal: 62, p: 11, g: 3.6, l: 0.2, f: 0, prix: null, role: 'protéine', rayon: 'épicerie' } });
+  ok(ai.ok && ai.row === 6, 'Serveur : ingrédient écrit sur la première ligne vide (6)', ai);
+  ok(sheets['Ingrédients'].cell(6, 8) === '' && sheets['Ingrédients'].cell(6, 11) === 'Prix manquant', 'Serveur : prix vide = « Prix manquant », jamais inventé');
+  var ar = call({ action: 'addRecipe', token: tk, recipe: { name: 'Skyr bowl', portions: 2, categorie: 'Collation', objectif: 'Sèche', prepa: 5, cuisson: 0,
+    lines: [{ ing: 'Skyr nature', qty: 300 }, { ing: 'Riz basmati cru', qty: 20 }], steps: [{ text: 'Mélanger', timer: null }] } });
+  ok(ar.ok && ar.row === 3, 'Serveur : recette écrite ligne 3 malgré les formules jusqu’à 201', ar);
+  ok(sheets['Lignes_recette'].cell(6, 2) === 'Skyr nature' && sheets['Lignes_recette'].cell(7, 3) === 20, 'Serveur : lignes de recette écrites en 6 et 7');
+  ok(call({ action: 'addRecipe', token: tk, recipe: { name: 'Bad', portions: 1, lines: [{ ing: 'Inconnu', qty: 1 }] } }).code === 'INTROUVABLE', 'Serveur : ingrédient inexact refusé');
+  ok(call({ action: 'updateLine', token: tk, row: 3, recipe: 'Poulet riz brocoli (exemple)', ing: 'Filet de poulet cru', qty: 160 }).ok && sheets['Lignes_recette'].cell(3, 3) === 160, 'Serveur : quantité modifiée');
+  ok(call({ action: 'updateLine', token: tk, row: 4, recipe: 'Poulet riz brocoli (exemple)', ing: 'Filet de poulet cru', qty: 1 }).code === 'DECALE', 'Serveur : ligne décalée détectée');
+  ok(call({ action: 'setStock', token: tk, items: [{ ing: 'Riz basmati cru', qty: 300 }, { ing: 'Skyr nature', qty: 500 }] }).ok &&
+    sheets['Stock cuisine'].cell(2, 2) === 300 && sheets['Stock cuisine'].cell(3, 1) === 'Skyr nature', 'Serveur : stock mis à jour et ajouté');
+  var su = call({ action: 'setup', token: tk });
+  ok(su.ok && sheets['Ingrédients'].cell(1, 12) === 'Rôle' && sheets['Ingrédients'].cell(2, 12) === 'glucide' && sheets['Ingrédients'].cell(6, 12) === 'protéine', 'Serveur : colonnes Rôle/Rayon ajoutées, défauts proposés, valeur saisie gardée', su.message);
+  ok(!!sheets['Profils'] && call({ action: 'saveProfile', profile: { name: 'Léa', kcal: 1800, prot: 110, objectif: 'Sèche', repas: 3, marge: 5 } }).ok, 'Serveur : profil enregistré');
+  ok(call({ action: 'data' }).profiles[0].name === 'Léa', 'Serveur : profil relu');
+  ok(call({ action: 'saveProfile', profile: { name: 'X', kcal: 'abc', prot: 100 } }).code === 'VALEUR', 'Serveur : valeur invalide refusée');
+  var forbidden = writes.filter(function (w) {
+    return (w.sheet === 'Recettes' && ((w.c >= 7 && w.c <= 17) || w.c === 20)) || (w.sheet === 'Lignes_recette' && w.c >= 4 && w.c <= 9);
+  });
+  ok(forbidden.length === 0, 'Serveur : AUCUNE écriture dans les colonnes calculées', forbidden);
+  ok(writes.every(function (w) { return !(w.sheet === 'Recettes' && w.r === 2); }), 'Serveur : la recette existante n’est jamais écrasée');
+}
+
+fetch('../apps-script/Code.gs').then(function (r) { return r.text(); }).then(function (code) {
+  try { runServerTests(code); } catch (e) { ok(false, 'Serveur : exception ' + e.message, e.stack); }
+}).finally(function () {
+  document.getElementById('out').textContent = out.join('\n');
+  document.getElementById('sum').innerHTML = '<h2 class="' + (fails ? 'ko' : 'ok') + '">' + passes + ' réussis, ' + fails + ' échoués</h2>';
+  window.TEST_RESULT = { passes: passes, fails: fails, out: out };
+});
+</script></body></html>
