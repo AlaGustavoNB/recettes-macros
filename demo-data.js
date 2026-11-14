@@ -56,5 +56,10 @@ window.DEMO_DATA = {
     { row: 2, name: 'Moi (démo)', kcal: 2400, prot: 160, objectif: 'Maintien', repas: 4, marge: 10 },
     { row: 3, name: 'Proche (démo)', kcal: 1800, prot: 110, objectif: 'Sèche', repas: 3, marge: 10 }
   ],
+  // Comptes fictifs du mode démo (jamais envoyés à un serveur).
+  accounts: [
+    { id: 'admin', name: 'Moi (démo)', role: 'admin', active: true, password: 'demo1234' },
+    { id: 'client', name: 'Proche (démo)', role: 'client', active: true, password: 'demo1234' }
+  ],
   hasRoleColumns: false
 };

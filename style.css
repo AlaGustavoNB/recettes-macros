@@ -190,3 +190,6 @@ details summary { min-height: 44px; display: flex; align-items: center; cursor: 
   .macros { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .qty-in { width: 84px; flex-basis: 84px; }
 }
+.acc { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; }
+.acc small { display: block; color: var(--muted); font-size: .82rem; margin-top: 4px; }
+form { margin: 0; }
