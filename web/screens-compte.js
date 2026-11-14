@@ -179,6 +179,61 @@
     } };
   });
 
+  /* ================= Inviter des proches (QR code) ================= */
+  var APP_URL = 'https://alagustavonb.github.io/recettes-macros/';
+  function posterPng() {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () {
+        var c = document.createElement('canvas'); c.width = 920; c.height = 1180;
+        c.getContext('2d').drawImage(img, 0, 0, 920, 1180);
+        c.toBlob(function (b) { b ? resolve(b) : reject(new Error('image')); }, 'image/png');
+      };
+      img.onerror = function () { reject(A.Api.ApiError('Image indisponible.', 'PHOTO')); };
+      // L'icône est intégrée dans l'affiche pour qu'elle apparaisse aussi dans l'image enregistrée.
+      Promise.all([fetch('qr-affiche.svg').then(function (r) { return r.text(); }), fetch('icons/icon-192.png').then(function (r) { return r.blob(); })])
+        .then(function (res) {
+          var fr = new FileReader();
+          fr.onload = function () {
+            var svg = res[0].replace(/(xlink:)?href="icons\/icon-192\.png"/g, function (m, x) { return (x || '') + 'href="' + fr.result + '"'; });
+            img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+          };
+          fr.readAsDataURL(res[1]);
+        }, reject);
+    });
+  }
+  A.route(/^#\/inviter$/, function () {
+    return { tab: 'plus', html: '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><h1>Inviter des proches</h1>' +
+      '<p>Fais scanner ce code avec l’appareil photo de leur téléphone : l’appli s’ouvre, ils créent leur compte puis l’installent sur l’écran d’accueil.</p>' +
+      '<div class="qr-box"><img src="qr-appli.svg" alt="QR code qui ouvre ' + esc(APP_URL) + '" width="280" height="280"></div>' +
+      '<p class="muted small center">' + esc(APP_URL.replace('https://', '')) + '</p>' +
+      '<div class="stack"><button class="btn primary big" id="q-img">Envoyer l’image du QR code</button>' +
+      '<button class="btn big" id="q-share">Partager le lien</button>' +
+      '<button class="btn ghost big" id="q-copy">Copier le lien</button></div>' +
+      (S.data.foyer ? '<p class="muted small">Pour partager aussi vos courses, donne-leur ensuite le code du foyer : <b class="code small-code">' + esc(S.data.foyer.code) + '</b> (Plus › Mon foyer).</p>' : '') +
+      '</section>',
+      bind: function (el) {
+        $('#q-copy', el).onclick = function () { A.copyText(APP_URL).then(function () { A.toast('Lien copié'); }); };
+        $('#q-share', el).onclick = function () {
+          if (navigator.share) navigator.share({ title: 'La Juste Assiette', text: 'Rejoins-moi sur La Juste Assiette (recettes, courses, portions calculées pour toi) :', url: APP_URL }).catch(function () {});
+          else A.copyText(APP_URL).then(function () { A.toast('Lien copié : colle-le dans un message'); });
+        };
+        $('#q-img', el).onclick = function () {
+          A.act('préparation de l’image du QR code', async function () {
+            var blob = await posterPng();
+            var file = new File([blob], 'la-juste-assiette-qr.png', { type: 'image/png' });
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+              await navigator.share({ files: [file], title: 'La Juste Assiette' }).catch(function () {});
+            } else {
+              var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name;
+              document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+              A.toast('Image enregistrée');
+            }
+          });
+        };
+      } };
+  });
+
   /* ================= Mon compte ================= */
   A.route(/^#\/compte$/, function () {
     return { tab: 'plus', html: '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><h1>Mon compte</h1>' +
