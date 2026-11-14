@@ -2,7 +2,7 @@
    Les écrans sont dans screens-*.js (ils s'enregistrent avec App.route). */
 (function () {
   'use strict';
-  var VERSION = '2.0.0';
+  var VERSION = '2.0.1';
   var C = window.Calc, Store = window.Store, Api = window.Api, Sync = Api.Sync;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
@@ -323,7 +323,7 @@
   }
   function report(err) {
     return scrub([
-      'Rapport d’erreur — appli recettes v' + VERSION,
+      'Rapport d’erreur — La Juste Assiette v' + VERSION,
       'Heure : ' + new Date().toLocaleString('fr-FR'),
       'Écran : ' + (location.hash || '#/'),
       'Ce que je faisais : ' + S.lastAction,
@@ -370,7 +370,7 @@
     el.innerHTML = (off ? '<span class="badge warn">Hors ligne</span> ' : '') +
       (q ? '<span class="badge warn" title="Modifications en attente d’envoi">⟳ ' + q + '</span> ' : '') +
       (demo() ? '<span class="badge">Démo</span> ' : '') +
-      (isAdmin() ? '<span class="badge ok">Admin</span> ' : '') + esc(txt);
+      (isAdmin() ? '<span class="badge ok">Admin</span> ' : '') + '<span class="upd">' + esc(txt) + '</span>';
   }
   window.addEventListener('online', function () { status(); refresh(true); });
   window.addEventListener('offline', status);

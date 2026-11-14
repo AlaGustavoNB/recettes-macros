@@ -1,4 +1,4 @@
-# Recettes & macros
+# La Juste Assiette
 
 Appli web (installable sur téléphone) pour partager un catalogue de recettes entre proches, chacun avec
 son compte et ses objectifs : quantités recalculées à ses kcal avec protéines fixes, planning de la semaine,

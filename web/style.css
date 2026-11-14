@@ -276,3 +276,9 @@ nav#nav .dot[hidden] { display: none; }
   .seg-b.on { box-shadow: 0 1px 3px rgba(0,0,0,.6); }
   .err-card { box-shadow: 0 6px 20px rgba(0,0,0,.5); }
 }
+.brand { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.brand img { border-radius: 7px; flex: 0 0 28px; }
+.status .badge { margin-top: 0; }
+@media (max-width: 420px) {
+  .status .upd { display: none; }
+}
