@@ -1,7 +1,7 @@
 /* Appli recettes & macros — écrans et logique d'interface. */
 (function () {
   'use strict';
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
   var C = window.Calc, Store = window.Store, Api = window.Api;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
@@ -10,7 +10,8 @@
     data: Store.get('data', null),
     idx: null,
     profile: Store.get('profile', ''),
-    token: Store.get('token', ''),
+    token: Store.get('session', ''),
+    me: Store.get('me', null),
     lastAction: 'ouverture',
     lastError: null,
     timers: {},
@@ -41,8 +42,28 @@
   }
   function enc(s) { return encodeURIComponent(s); }
   function go(h) { location.hash = h; }
-  function isAdmin() { return !!S.token; }
+  // Compte admin (droits réels) / vue admin affichée (l'admin peut passer en vue client).
+  function isAdminAccount() { return !!(S.token && S.me && S.me.role === 'admin'); }
+  function isAdmin() { return isAdminAccount() && Store.get('adminView', true) !== false; }
   function demo() { return !!Store.get('demo', false); }
+
+  function setSession(token, me) {
+    S.token = token || ''; S.me = me || null;
+    if (S.token) { Store.set('session', S.token); Store.set('me', S.me); } else { Store.del('session'); Store.del('me'); }
+  }
+  // Déconnexion : on efface aussi la copie des données de ce téléphone.
+  function logout(msg) {
+    setSession('', null); setData(null); S.profile = ''; Store.del('profile');
+    if (msg) toast(msg);
+    go('#/login'); render();
+  }
+  // Profil affiché : un client voit toujours le sien ; l'admin peut en choisir un autre.
+  function syncProfile() {
+    if (!S.me) return;
+    if (S.me.role !== 'admin' || !S.profile || !(S.data && (S.data.profiles || []).some(function (p) { return p.name === S.profile; }))) {
+      S.profile = S.me.name; Store.set('profile', S.profile);
+    }
+  }
 
   function setData(d) {
     S.data = d;
@@ -108,23 +129,24 @@
     RESEAU: 'Vérifie ta connexion (wifi ou 4G) puis réessaie. Si ça continue, copie le rapport.',
     HTTP: 'Le serveur Google a un souci passager. Réessaie dans une minute.',
     REPONSE: 'Le script Google n’est peut-être pas déployé en accès « Tout le monde », ou son autorisation a expiré. Voir le mode d’emploi, étape « Déployer ».',
-    CONFIG: 'Ouvre le lien complet que tu as reçu (il contient #api=…), ou va dans Plus > Connexion au Sheet.',
-    NON_AUTORISE: 'Ressaisis ton code secret dans Plus > Gestion de la base.',
-    CODE_FAUX: 'Vérifie le code et réessaie. Après 5 erreurs, attente de 15 minutes.',
+    CONFIG: 'Ouvre le lien complet que tu as reçu, ou demande à l’admin le lien de connexion.',
+    NON_AUTORISE: 'Cette action est réservée à l’admin.',
+    NON_CONNECTE: 'Reconnecte-toi avec ton identifiant et ton mot de passe.',
+    MDP_FAUX: 'Vérifie l’identifiant et le mot de passe (majuscules comprises). Après 5 erreurs, attente de 15 minutes. Mot de passe oublié : demande à l’admin de le réinitialiser.',
+    PAS_DE_COMPTE: 'Dans le Sheet : menu Appli recettes > 2. Créer ou réinitialiser mon compte admin.',
     BLOQUE: 'Patiente 15 minutes avant de réessayer.',
     DECALE: 'Touche « Actualiser les données » (Plus) puis recommence.',
     DOUBLON: 'Utilise l’élément existant au lieu d’en créer un nouveau.',
     DRIVE: 'Dans Apps Script : Services > + > Drive API > Ajouter, puis redéploie. Tu peux aussi saisir les valeurs à la main.',
-    PAS_DE_CODE: 'Dans le Sheet : menu Appli recettes > 2. Définir le code secret.',
     PLEIN: 'Dans le Sheet, recopie la dernière ligne de formules vers le bas pour ajouter des lignes.'
   };
 
   function scrub(s) {
     return String(s == null ? '' : s)
       .replace(/AKfy[\w-]{10,}/g, '[id-api]')
-      .replace(/\d{13}\.[\w-]{20,}={0,2}/g, '[jeton]')
+      .replace(/[\w.-]+\|\d{13}\|[\w-]{1,8}\|[\w-]+={0,2}/g, '[jeton]')
       .replace(/script\.google\.com\/macros\/s\/[\w-]+/g, 'script.google.com/macros/s/[id-api]')
-      .replace(/"(token|code)"\s*:\s*"[^"]*"/g, '"$1":"[masqué]"');
+      .replace(/"(token|code|password|oldPassword|newPassword)"\s*:\s*"[^"]*"/g, '"$1":"[masqué]"');
   }
 
   function report(err) {
@@ -194,26 +216,26 @@
   /* ================= Données ================= */
   async function refresh(silent) {
     if (S.loading) return;
-    if (!demo() && !Api.apiUrl()) { render(); return; }
+    if ((!demo() && !Api.apiUrl()) || !S.token) { render(); return; }
     S.loading = true; status();
     try {
       S.lastAction = 'lecture du Sheet';
-      var d = await Api.call('data');
-      delete d.ok;
-      setData(d);
-      if (S.token && !demo()) {
-        Api.call('check', { token: S.token }, { tries: 1 }).then(function (r) {
-          if (!r.admin) { S.token = ''; Store.del('token'); render(); }
-        }, function () {});
-      }
+      await loadData();
       if (!isFormScreen()) render(); else status();
       if (!silent) toast('Données à jour');
     } catch (err) {
+      if (err.code === 'NON_CONNECTE') { logout('Connexion expirée : reconnecte-toi.'); return; }
       if (err.code !== 'HORS_LIGNE' || !S.data) showError(err, function () { refresh(); });
     } finally { S.loading = false; status(); }
   }
+  async function loadData() {
+    var d = await Api.call('data', { token: S.token });
+    delete d.ok;
+    if (d.me) { setSession(S.token, d.me); delete d.me; }
+    setData(d); syncProfile();
+  }
 
-  function isFormScreen() { return /^#\/(ingredient|nouvelle-recette|profil-edit|connexion|cuisine)/.test(location.hash); }
+  function isFormScreen() { return /^#\/(ingredient|nouvelle-recette|profil-edit|connexion|cuisine|login|compte|comptes)/.test(location.hash); }
 
   function status() {
     var el = $('#status');
@@ -221,7 +243,7 @@
     var txt = S.loading ? 'Mise à jour…' : (S.data ? 'Màj ' + dateFr(S.data.fetchedAt).replace(' à ', ' ') : 'Aucune donnée');
     el.innerHTML = (off ? '<span class="badge warn">Hors ligne</span> ' : '') +
       (demo() ? '<span class="badge">Démo</span> ' : '') +
-      (isAdmin() ? '<span class="badge ok">Modif.</span> ' : '') + esc(txt);
+      (isAdmin() ? '<span class="badge ok">Admin</span> ' : '') + esc(txt);
   }
   window.addEventListener('online', function () { status(); refresh(true); });
   window.addEventListener('offline', status);
@@ -234,8 +256,10 @@
     status();
     var h = location.hash || '#/';
     var main = $('#main');
-    if (!S.data && !/^#\/connexion/.test(h)) { main.innerHTML = screenWelcome(); bindWelcome(); nav(''); return; }
-    if (S.data && !profile() && !/^#\/(profils|profil-edit|connexion)/.test(h)) { h = '#/profils'; }
+    if (!S.token && !/^#\/connexion/.test(h)) h = '#/login';
+    else if (S.token && /^#\/login/.test(h)) h = '#/recettes';
+    if (S.token && !S.data && !/^#\/connexion/.test(h)) { main.innerHTML = screenWelcome(); bindWelcome(); nav(''); return; }
+    if (S.token && S.data && !profile() && !/^#\/(profils|profil-edit|connexion|compte)/.test(h)) { h = '#/profils'; }
     for (var i = 0; i < routes.length; i++) {
       var m = h.match(routes[i][0]);
       if (m) {
@@ -253,53 +277,84 @@
 
   function nav(tab) {
     $$('#nav a').forEach(function (a) { a.classList.toggle('on', a.getAttribute('data-tab') === tab); });
-    $('#nav').hidden = !S.data || !profile();
+    $('#nav').hidden = !S.token || !S.data || !profile();
   }
 
   /* ================= Accueil / connexion ================= */
   function screenWelcome() {
-    return '<section class="screen"><h1>Bienvenue</h1>' +
-      '<p>Cette appli lit ta base de recettes dans le Google Sheet.</p>' +
-      (Api.apiUrl() ? '<p>Lecture du Sheet en cours…</p><button class="btn primary big" id="w-retry">Réessayer</button>'
-        : '<p>Ouvre le lien complet que tu as reçu (il se termine par <code>#api=…</code>).</p>' +
-          '<a class="btn primary big" href="#/connexion">Relier mon Google Sheet</a>') +
-      '<button class="btn ghost big" id="w-demo">Essayer avec des données de démo</button></section>';
+    return '<section class="screen"><h1>Chargement</h1>' +
+      '<p>Lecture des recettes en cours…</p><button class="btn primary big" id="w-retry">Réessayer</button>' +
+      '<button class="btn ghost big" id="w-out">Se déconnecter</button></section>';
   }
   function bindWelcome() {
-    var r = $('#w-retry'); if (r) r.onclick = function () { refresh(); };
-    $('#w-demo').onclick = function () { Store.set('demo', true); refresh(true); };
+    $('#w-retry').onclick = function () { refresh(); };
+    $('#w-out').onclick = function () { logout(); };
   }
+
+  route(/^#\/login$/, function () {
+    return { html: '<section class="screen"><h1>Connexion</h1>' +
+      '<p>Connecte-toi avec l’identifiant et le mot de passe donnés par l’admin.</p>' +
+      (demo() ? '<p class="notice">Mode démo : <b>admin</b> ou <b>client</b>, mot de passe <b>demo1234</b>.</p>' : '') +
+      '<form id="l-form">' +
+      field('Identifiant', '<input id="l-id" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>') +
+      field('Mot de passe', '<input id="l-pw" type="password" autocomplete="current-password" required>') +
+      '<button class="btn primary big" type="submit">Se connecter</button></form>' +
+      '<p class="muted small">Mot de passe oublié : demande à l’admin de le réinitialiser.</p>' +
+      '<hr><button class="btn ghost big" id="l-demo">' + (demo() ? 'Quitter le mode démo' : 'Essayer avec des données de démo') + '</button>' +
+      '<a class="btn ghost big" href="#/connexion">Paramètres de connexion</a></section>',
+      bind: function () {
+        $('#l-form').onsubmit = function (e) {
+          e.preventDefault();
+          var id = $('#l-id').value.trim(), pw = $('#l-pw').value;
+          if (!id || !pw) return;
+          act('connexion', async function () {
+            var r = await Api.call('login', { id: id, password: pw }, { tries: 2 });
+            setSession(r.token, r.me);
+            S.profile = r.me.name; Store.set('profile', S.profile);
+            await loadData(); toast('Bonjour ' + r.me.name);
+            go(profile() ? '#/recettes' : '#/profils'); render();
+          }, false);
+        };
+        $('#l-demo').onclick = function () { Store.set('demo', !demo()); Store.del('demoData'); render(); };
+      } };
+  });
 
   route(/^#\/connexion$/, function () {
     var cur = Store.get('apiUrl', '');
-    return { tab: 'plus', html: '<section class="screen"><h1>Connexion au Sheet</h1>' +
-      '<p>Colle ici le lien de l’« Application Web » Apps Script (il commence par <code>https://script.google.com/macros/s/</code>).</p>' +
+    return { tab: 'plus', html: '<section class="screen"><a class="back" href="' + (S.token ? '#/plus' : '#/login') + '">‹ Retour</a><h1>Paramètres de connexion</h1>' +
+      '<p>Lien du serveur (« Application Web » Apps Script, commence par <code>https://script.google.com/macros/s/</code>). ' +
+      'Laisse vide pour utiliser le serveur par défaut.</p>' +
       '<label class="field"><span>Lien de l’application Web</span><input id="c-url" type="url" inputmode="url" autocomplete="off" value="' + esc(cur ? Api.apiUrl() : '') + '"></label>' +
-      '<button class="btn primary big" id="c-save">Enregistrer et tester</button>' +
-      '<hr><p class="muted">Mode démo : données fictives, rien n’est écrit dans ton Sheet.</p>' +
+      '<button class="btn primary big" id="c-save">Enregistrer</button>' +
+      '<hr><p class="muted">Mode démo : données fictives, rien n’est écrit dans le Sheet.</p>' +
       '<button class="btn ghost big" id="c-demo">' + (demo() ? 'Quitter le mode démo' : 'Passer en mode démo') + '</button>' +
       '<p class="muted small">Version ' + VERSION + '</p></section>',
       bind: function () {
         $('#c-save').onclick = function () {
           var v = $('#c-url').value.trim();
           var m = v.match(/\/macros\/s\/([\w-]+)/);
-          if (!m) { toast('Lien non reconnu. Il doit contenir /macros/s/…'); return; }
-          Store.set('apiUrl', m[1]); Store.set('demo', false); S.token = ''; Store.del('token');
-          act('test de la connexion au Sheet', async function () { setData(null); await refreshStrict(); toast('Connexion réussie'); go('#/profils'); });
+          if (v && !m) { toast('Lien non reconnu. Il doit contenir /macros/s/…'); return; }
+          if (m) Store.set('apiUrl', m[1]); else Store.del('apiUrl');
+          Store.set('demo', false);
+          logout('Serveur enregistré. Connecte-toi.');
         };
         $('#c-demo').onclick = function () {
-          var on = !demo(); Store.set('demo', on); S.token = ''; Store.del('token');
-          setData(null); Store.del('profile'); S.profile = '';
-          if (on) { refresh(true).then(function () { go('#/profils'); }); } else { go('#/'); refresh(true); }
+          Store.set('demo', !demo()); Store.del('demoData');
+          logout(demo() ? 'Mode démo : identifiant admin ou client, mot de passe demo1234.' : 'Mode démo quitté.');
         };
       } };
   });
-  async function refreshStrict() { var d = await Api.call('data'); delete d.ok; setData(d); render(); }
+  async function refreshStrict() { await loadData(); render(); }
 
   /* ================= Profils ================= */
   route(/^#\/profils$/, function () {
+    if (!isAdminAccount()) {
+      // Un client a un seul profil : le sien (à créer s'il n'existe pas encore).
+      setTimeout(function () { go(profile() ? '#/recettes' : '#/profil-edit/' + enc(S.me ? S.me.name : '')); });
+      return { html: '' };
+    }
     var ps = S.data.profiles || [];
-    return { tab: 'plus', html: '<section class="screen"><h1>Qui cuisine ?</h1>' +
+    return { tab: 'plus', html: '<section class="screen"><h1>Quel profil afficher ?</h1>' +
       (ps.length ? '<div class="stack">' + ps.map(function (p) {
         return '<button class="btn big profile ' + (p.name === S.profile ? 'primary' : '') + '" data-p="' + esc(p.name) + '">' +
           '<strong>' + esc(p.name) + '</strong><span>' + fmt(p.kcal) + ' kcal · ' + fmt(p.prot) + ' g prot. · ' + esc(p.objectif || '') + '</span></button>';
@@ -313,9 +368,11 @@
   });
 
   route(/^#\/profil-edit\/(.*)$/, function (name) {
-    var p = (S.data.profiles || []).filter(function (x) { return x.name === name; })[0] || { objectif: 'Maintien', repas: 3, marge: 10 };
+    if (!isAdminAccount() && S.me) name = S.me.name; // un client ne règle que son propre profil
+    var found = (S.data.profiles || []).filter(function (x) { return x.name === name; })[0];
+    var p = found || { name: name, objectif: 'Maintien', repas: 3, marge: 10 };
     var obj = ['Sèche', 'Maintien', 'Masse'];
-    return { tab: 'plus', html: '<section class="screen"><h1>' + (p.name ? 'Mon profil' : 'Nouveau profil') + '</h1>' +
+    return { tab: 'plus', html: '<section class="screen"><h1>' + (found ? 'Mes cibles' : 'Créer mon profil') + '</h1>' +
       '<p class="muted">Valeurs saisies à la main : l’appli ne calcule aucune cible.</p>' +
       field('Prénom', '<input id="p-name" value="' + esc(p.name || '') + '" ' + (p.name ? 'readonly' : '') + ' autocomplete="off">') +
       field('kcal cibles par jour', '<input id="p-kcal" type="number" inputmode="numeric" value="' + esc(p.kcal || '') + '">') +
@@ -330,7 +387,7 @@
             objectif: $('#p-obj').value, repas: C.num($('#p-repas').value) || 3, marge: C.num($('#p-marge').value) };
           if (!np.name || !np.kcal || !np.prot) { toast('Prénom, kcal et protéines sont obligatoires.'); return; }
           act('enregistrement du profil', async function () {
-            await Api.call('saveProfile', { profile: np });
+            await Api.call('saveProfile', { token: S.token, profile: np });
             S.profile = np.name; Store.set('profile', np.name);
             await refreshStrict(); toast('Profil enregistré'); go('#/recettes');
           });
@@ -350,7 +407,7 @@
     });
     return { tab: 'recettes', html: '<section class="screen"><div class="row between"><h1>Recettes</h1>' +
       (isAdmin() ? '<a class="btn small" href="#/nouvelle-recette">+ Recette</a>' : '') + '</div>' +
-      '<p class="muted">Profil : <a href="#/profils">' + esc(S.profile) + '</a> · ' + fmt(perMeal().kcal) + ' kcal par repas</p>' +
+      '<p class="muted">Profil : <a href="' + (isAdminAccount() ? '#/profils' : '#/profil-edit/' + enc(S.profile)) + '">' + esc(S.profile) + '</a> · ' + fmt(perMeal().kcal) + ' kcal par repas</p>' +
       '<input id="r-search" class="search" type="search" placeholder="Rechercher une recette" value="' + esc(q) + '" aria-label="Rechercher">' +
       '<div id="r-list" class="stack">' + list.map(cardRecipe).join('') + '</div></section>',
       bind: function (el) {
@@ -726,17 +783,30 @@
 
   /* ================= Plus ================= */
   route(/^#\/plus$/, function () {
-    return { tab: 'plus', html: '<section class="screen"><h1>Plus</h1><div class="stack">' +
-      '<a class="btn big" href="#/profils">Changer de profil (' + esc(S.profile) + ')</a>' +
+    var adm = isAdminAccount();
+    return { tab: 'plus', html: '<section class="screen"><h1>Plus</h1>' +
+      '<p class="muted">Connecté : <b>' + esc(S.me ? S.me.id : '') + '</b> (' + (adm ? 'admin' : 'client') + ')</p>' +
+      (adm ? '<div class="panel"><div class="panel-title">Affichage</div><div class="row wrap">' +
+        '<button class="btn ' + (isAdmin() ? 'primary' : '') + '" data-view="admin">Vue admin</button>' +
+        '<button class="btn ' + (!isAdmin() ? 'primary' : '') + '" data-view="client">Vue client</button></div>' +
+        '<p class="muted small">La vue client montre l’appli comme la voient tes proches.</p></div>' : '') +
+      '<div class="stack">' +
+      (adm ? '<a class="btn big" href="#/profils">Changer de profil affiché (' + esc(S.profile) + ')</a>' : '') +
       '<a class="btn big" href="#/profil-edit/' + enc(S.profile) + '">Mes cibles (kcal, protéines)</a>' +
       '<a class="btn big" href="#/stock">Stock cuisine</a>' +
-      '<a class="btn big" href="#/gestion">' + (isAdmin() ? 'Gestion de la base' : 'Débloquer les modifications') + '</a>' +
+      (isAdmin() ? '<a class="btn big" href="#/gestion">Gestion de la base</a><a class="btn big" href="#/comptes">Comptes utilisateurs</a>' : '') +
       '<button class="btn big" id="x-refresh">Actualiser les données</button>' +
       '<a class="btn big" href="guide.html">Mode d’emploi</a>' +
-      '<a class="btn ghost big" href="#/connexion">Connexion au Sheet</a>' +
+      '<a class="btn big" href="#/compte">Mon compte (mot de passe)</a>' +
+      (adm ? '<a class="btn ghost big" href="#/connexion">Paramètres de connexion</a>' : '') +
       (S.lastError ? '<button class="btn ghost big" id="x-report">Copier le dernier rapport d’erreur</button>' : '') +
+      '<button class="btn ghost big" id="x-logout">Se déconnecter</button>' +
       '</div><p class="muted small center">Données du ' + dateFr(S.data.fetchedAt) + ' · v' + VERSION + '</p></section>',
       bind: function (el) {
+        $$('[data-view]', el).forEach(function (b) {
+          b.onclick = function () { Store.set('adminView', b.getAttribute('data-view') === 'admin'); render(); toast(isAdmin() ? 'Vue admin' : 'Vue client'); };
+        });
+        $('#x-logout', el).onclick = function () { logout('Déconnecté'); };
         $('#x-refresh', el).onclick = function () { refresh(); };
         var xr = $('#x-report', el); if (xr) xr.onclick = function () { copyText(report(S.lastError)).then(function () { toast('Rapport copié'); }); };
       } };
@@ -788,27 +858,105 @@
       } };
   });
 
-  /* ================= Gestion (code secret) ================= */
+  /* ================= Mon compte ================= */
+  route(/^#\/compte$/, function () {
+    return { tab: 'plus', html: '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><h1>Mon compte</h1>' +
+      '<p>Identifiant : <b>' + esc(S.me ? S.me.id : '') + '</b> · profil ' + esc(S.me ? S.me.name : '') + '</p>' +
+      '<form id="a-form"><div class="panel"><div class="panel-title">Changer mon mot de passe</div>' +
+      field('Mot de passe actuel', '<input id="a-old" type="password" autocomplete="current-password" required>') +
+      field('Nouveau mot de passe', '<input id="a-new" type="password" autocomplete="new-password" minlength="8" required>', '8 caractères minimum') +
+      field('Nouveau mot de passe (encore)', '<input id="a-new2" type="password" autocomplete="new-password" required>') +
+      '<button class="btn primary big" type="submit">Changer le mot de passe</button></div></form>' +
+      '<button class="btn ghost big" id="a-out">Se déconnecter</button></section>',
+      bind: function () {
+        $('#a-out').onclick = function () { logout('Déconnecté'); };
+        $('#a-form').onsubmit = function (e) {
+          e.preventDefault();
+          var o = $('#a-old').value, n1 = $('#a-new').value, n2 = $('#a-new2').value;
+          if (n1.length < 8) { toast('8 caractères minimum.'); return; }
+          if (n1 !== n2) { toast('Les deux nouveaux mots de passe sont différents.'); return; }
+          act('changement de mot de passe', async function () {
+            var r = await Api.call('changePassword', { token: S.token, oldPassword: o, newPassword: n1 }, { tries: 1 });
+            setSession(r.token, S.me); toast('Mot de passe changé'); go('#/plus');
+          }, false);
+        };
+      } };
+  });
+
+  /* ================= Comptes (admin) ================= */
+  route(/^#\/comptes$/, function () {
+    if (!isAdmin()) { setTimeout(function () { go('#/plus'); }); return { html: '' }; }
+    var names = (S.data.profiles || []).map(function (p) { return p.name; });
+    return { tab: 'plus', html: '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><h1>Comptes utilisateurs</h1>' +
+      '<div id="acc-list"><p class="muted">Chargement…</p></div>' +
+      '<form id="acc-form" class="panel"><div class="panel-title">Nouveau compte</div>' +
+      field('Identifiant', '<input id="n-id" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off" required>', 'Lettres, chiffres, point ou tiret, sans espace ni accent (ex. marine).') +
+      field('Prénom du profil', '<input id="n-pname" list="prof-names" autocomplete="off" required>', 'Doit correspondre au prénom de l’onglet Profils (ou sera créé à la 1re connexion).') +
+      '<datalist id="prof-names">' + names.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>' +
+      field('Mot de passe provisoire', '<input id="n-pw" autocomplete="new-password" minlength="8" required>', '8 caractères minimum. Donne-le à la personne : elle pourra le changer dans Mon compte.') +
+      field('Rôle', '<select id="n-role"><option value="client">Client</option><option value="admin">Admin</option></select>') +
+      '<button class="btn primary big" type="submit">Créer le compte</button></form></section>',
+      bind: function (el) {
+        var load = function () {
+          act('lecture des comptes', async function () {
+            var r = await Api.call('listAccounts', { token: S.token });
+            var box = $('#acc-list', el); if (!box) return;
+            box.innerHTML = r.accounts.length ? '<ul class="shop">' + r.accounts.map(function (a) {
+              var self = S.me && a.id === S.me.id;
+              return '<li><div class="acc"><div><b>' + esc(a.id) + '</b> · ' + esc(a.name) +
+                ' <span class="badge ' + (a.role === 'admin' ? 'ok' : '') + '">' + (a.role === 'admin' ? 'admin' : 'client') + '</span>' +
+                (a.active ? '' : ' <span class="badge warn">désactivé</span>') +
+                '<small>' + (a.lastLogin ? 'Dernière connexion : ' + esc(String(a.lastLogin).slice(0, 10).split('-').reverse().join('/')) : 'Jamais connecté') + '</small></div>' +
+                '<div class="row wrap"><button class="btn small" data-reset="' + esc(a.id) + '">Nouveau mot de passe</button>' +
+                (self ? '' : '<button class="btn small ghost" data-active="' + esc(a.id) + '" data-v="' + (a.active ? '0' : '1') + '">' + (a.active ? 'Désactiver' : 'Réactiver') + '</button>' +
+                  '<button class="btn small ghost" data-role="' + esc(a.id) + '" data-v="' + (a.role === 'admin' ? 'client' : 'admin') + '">' + (a.role === 'admin' ? 'Passer client' : 'Passer admin') + '</button>') +
+                '</div></div></li>';
+            }).join('') + '</ul>' : '<p>Aucun compte.</p>';
+            $$('[data-reset]', box).forEach(function (b) {
+              b.onclick = function () {
+                var pw = prompt('Nouveau mot de passe pour « ' + b.getAttribute('data-reset') + ' » (8 caractères minimum) :');
+                if (!pw) return;
+                act('réinitialisation du mot de passe', async function () {
+                  await Api.call('resetPassword', { token: S.token, id: b.getAttribute('data-reset'), password: pw }, { tries: 1 });
+                  toast('Mot de passe changé. Donne-le à la personne.'); load();
+                }, false);
+              };
+            });
+            $$('[data-active]', box).forEach(function (b) {
+              b.onclick = function () {
+                act('modification du compte', async function () {
+                  await Api.call('updateAccount', { token: S.token, account: { id: b.getAttribute('data-active'), active: b.getAttribute('data-v') === '1' } });
+                  toast('Compte modifié'); load();
+                });
+              };
+            });
+            $$('[data-role]', box).forEach(function (b) {
+              b.onclick = function () {
+                act('modification du compte', async function () {
+                  await Api.call('updateAccount', { token: S.token, account: { id: b.getAttribute('data-role'), role: b.getAttribute('data-v') } });
+                  toast('Compte modifié'); load();
+                });
+              };
+            });
+          });
+        };
+        load();
+        $('#acc-form', el).onsubmit = function (e) {
+          e.preventDefault();
+          var acc = { id: $('#n-id').value.trim().toLowerCase(), name: $('#n-pname').value.trim(), password: $('#n-pw').value, role: $('#n-role').value };
+          if (!/^[a-z0-9._-]{3,30}$/.test(acc.id)) { toast('Identifiant : 3 à 30 lettres/chiffres, sans espace ni accent.'); return; }
+          if (acc.password.length < 8) { toast('Mot de passe : 8 caractères minimum.'); return; }
+          act('création d’un compte', async function () {
+            await Api.call('createAccount', { token: S.token, account: acc }, { tries: 1 });
+            toast('Compte « ' + acc.id + ' » créé'); $('#acc-form', el).reset(); load();
+          }, false);
+        };
+      } };
+  });
+
+  /* ================= Gestion de la base (admin) ================= */
   route(/^#\/gestion$/, function () {
-    if (!isAdmin()) {
-      return { tab: 'plus', html: '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><h1>Débloquer les modifications</h1>' +
-        '<p>Réservé à la personne qui gère la base.</p>' +
-        (demo() ? '<p class="notice">Mode démo : le code est <b>demo123</b>.</p>' : '') +
-        field('Code secret', '<input id="g-code" type="password" autocomplete="off" autocapitalize="off">') +
-        '<button class="btn primary big" id="g-unlock">Débloquer</button></section>',
-        bind: function () {
-          var go2 = function () {
-            var code = $('#g-code').value;
-            if (!code) return;
-            act('déblocage des modifications', async function () {
-              var r = await Api.call('unlock', { code: code }, { tries: 1 });
-              S.token = r.token; Store.set('token', r.token); toast('Modifications débloquées'); render();
-            }, false);
-          };
-          $('#g-unlock').onclick = go2;
-          $('#g-code').onkeydown = function (e) { if (e.key === 'Enter') go2(); };
-        } };
-    }
+    if (!isAdmin()) { setTimeout(function () { go('#/plus'); }); return { html: '' }; }
     var noRoles = !S.data.hasRoleColumns;
     return { tab: 'plus', html: '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><h1>Gestion de la base</h1>' +
       (noRoles ? '<div class="notice warn">Les colonnes Rôle et Rayon n’existent pas encore dans l’onglet Ingrédients. Les valeurs proposées d’après les macros sont utilisées en attendant.</div>' : '') +
@@ -818,15 +966,13 @@
       '<a class="btn big" href="#/nouvelle-recette">Nouvelle recette</a>' +
       '<a class="btn big" href="#/ingredients">Ingrédients : prix, rôle, rayon</a>' +
       '<button class="btn big" id="g-setup">' + (noRoles ? 'Ajouter Rôle et Rayon au Sheet' : 'Compléter Rôle et Rayon vides') + '</button>' +
-      '<button class="btn ghost big" id="g-lock">Verrouiller sur ce téléphone</button></div></section>',
+      '<a class="btn big" href="#/comptes">Comptes utilisateurs</a></div></section>',
       bind: function () {
         $('#g-setup').onclick = function () {
           act('ajout des colonnes Rôle et Rayon', async function () {
             var r = await Api.call('setup', { token: S.token }); await refreshStrict(); toast(r.message || 'Fait');
           });
-        };
-        $('#g-lock').onclick = function () { S.token = ''; Store.del('token'); toast('Modifications verrouillées'); go('#/plus'); };
-      } };
+        };      } };
   });
 
   route(/^#\/ingredients$/, function () {
@@ -1089,8 +1235,13 @@
   function boot() {
     // Lien partagé : …/#api=IDENTIFIANT → mémorisé puis retiré de l'adresse.
     var m = location.hash.match(/api=([\w-]+)/);
-    if (m) { Store.set('apiUrl', m[1]); Store.set('demo', false); history.replaceState(null, '', location.pathname + '#/'); }
+    if (m) {
+      if (m[1] !== Store.get('apiUrl', '')) { Store.set('apiUrl', m[1]); setSession('', null); setData(null); }
+      Store.set('demo', false); history.replaceState(null, '', location.pathname + '#/');
+    }
     if (location.search.indexOf('demo=1') >= 0 && !Store.get('apiUrl', '')) Store.set('demo', true);
+    Store.del('token'); // ancien code secret (v1.0), remplacé par les comptes
+    if (!S.token) { setData(null); S.profile = ''; Store.del('profile'); }
     render();
     refresh(true);
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {

@@ -169,22 +169,34 @@ function runServerTests(code) {
   window.ContentService = { MimeType: { JSON: 'json' }, createTextOutput: function (s) { return { s: s, setMimeType: function () { return this; } }; } };
   window.Session = { getScriptTimeZone: function () { return 'Europe/Paris'; } };
   window.Logger = { log: function () {} };
-  var api = new Function(code + '\nreturn { handle_: handle_, doPost: doPost };')();
+  var api = new Function(code + '\nreturn { handle_: handle_, doPost: doPost, createAccount_: createAccount_ };')();
   function call(o) { return JSON.parse(api.doPost({ postData: { contents: JSON.stringify(o) } }).s); }
 
-  var d = call({ action: 'data' });
-  ok(d.ok && d.recipes.length === 1 && d.recipes[0].lines.length === 4 && d.ingredients.length === 4, 'Serveur : lecture du Sheet', d.ok);
-  ok(d.recipes[0].steps[0].timer === 12 && d.stock[0].qty === 500, 'Serveur : étapes et stock lus');
-  ok(call({ action: 'unlock', code: 'x' }).code === 'PAS_DE_CODE', 'Serveur : pas de code défini → message clair');
-  props.ADMIN_CODE = 'secret42';
-  ok(call({ action: 'addIngredient', ingredient: { name: 'X' } }).code === 'NON_AUTORISE', 'Serveur : écriture refusée sans code');
-  ok(call({ action: 'unlock', code: 'faux' }).code === 'CODE_FAUX', 'Serveur : mauvais code refusé');
-  var u = call({ action: 'unlock', code: 'secret42' });
-  ok(u.ok && u.token && u.token.indexOf('secret42') < 0, 'Serveur : bon code → jeton (sans le code dedans)');
+  ok(call({ action: 'data' }).code === 'NON_CONNECTE', 'Serveur : aucune donnée sans connexion');
+  ok(call({ action: 'login', id: 'x', password: 'y' }).code === 'PAS_DE_COMPTE', 'Serveur : aucun compte → message clair');
+  api.createAccount_({ id: 'Nacim', name: 'Nacim', role: 'admin', password: 'motdepasse1' });
+  api.createAccount_({ id: 'marine', name: 'Marine', role: 'client', password: 'secret-marine' });
+  var cpt = sheets['Comptes'];
+  ok(cpt && cpt.cell(2, 1) === 'nacim' && !!cpt.cell(2, 7) && cpt.rows.every(function (r) { return r.indexOf('motdepasse1') < 0 && r.indexOf('secret-marine') < 0; }),
+    'Serveur : comptes créés, mot de passe jamais stocké en clair');
+  ok(call({ action: 'login', id: 'nacim', password: 'faux' }).code === 'MDP_FAUX', 'Serveur : mauvais mot de passe refusé');
+  var u = call({ action: 'login', id: ' NACIM ', password: 'motdepasse1' });
+  ok(u.ok && u.token && u.me.role === 'admin' && u.token.indexOf('motdepasse1') < 0, 'Serveur : connexion admin (identifiant sans casse) → jeton', u.me);
   var tk = u.token;
-  ok(call({ action: 'check', token: tk }).admin === true && call({ action: 'check', token: tk + 'x' }).admin === false, 'Serveur : jeton vérifié, jeton modifié refusé');
-  for (var i = 0; i < 5; i++) call({ action: 'unlock', code: 'nope' });
-  ok(call({ action: 'unlock', code: 'secret42' }).code === 'BLOQUE', 'Serveur : blocage après 5 essais faux');
+  var d = call({ action: 'data', token: tk });
+  ok(d.ok && d.recipes.length === 1 && d.recipes[0].lines.length === 4 && d.ingredients.length === 4 && d.me.id === 'nacim', 'Serveur : lecture du Sheet une fois connecté', d.ok);
+  ok(d.recipes[0].steps[0].timer === 12 && d.stock[0].qty === 500, 'Serveur : étapes et stock lus');
+  ok(call({ action: 'check', token: tk }).me.role === 'admin' && call({ action: 'check', token: tk + 'x' }).code === 'NON_CONNECTE', 'Serveur : jeton vérifié, jeton modifié refusé');
+  ok(call({ action: 'data', token: tk.replace(/^nacim\|/, 'marine|') }).code === 'NON_CONNECTE', 'Serveur : jeton falsifié (autre compte) refusé');
+  var cu = call({ action: 'login', id: 'marine', password: 'secret-marine' });
+  var ctk = cu.token;
+  ok(cu.ok && cu.me.role === 'client', 'Serveur : connexion client');
+  ok(call({ action: 'addIngredient', token: ctk, ingredient: { name: 'X' } }).code === 'NON_AUTORISE', 'Serveur : écriture refusée à un client');
+  ok(call({ action: 'listAccounts', token: ctk }).code === 'NON_AUTORISE', 'Serveur : liste des comptes refusée à un client');
+  ok(call({ action: 'addIngredient', ingredient: { name: 'X' } }).code === 'NON_CONNECTE', 'Serveur : écriture refusée sans connexion');
+  for (var i = 0; i < 5; i++) call({ action: 'login', id: 'marine', password: 'nope' });
+  ok(call({ action: 'login', id: 'marine', password: 'secret-marine' }).code === 'BLOQUE', 'Serveur : blocage après 5 essais faux');
+  ok(call({ action: 'login', id: 'nacim', password: 'motdepasse1' }).ok, 'Serveur : le blocage ne touche que ce compte');
   cache = {};
   writes.length = 0;
   ok(call({ action: 'addIngredient', token: tk, ingredient: { name: 'riz basmati CRU', kcal: 1, p: 1, g: 1, l: 1 } }).code === 'DOUBLON', 'Serveur : doublon détecté (casse/accents)');
@@ -202,9 +214,25 @@ function runServerTests(code) {
     sheets['Stock cuisine'].cell(2, 2) === 300 && sheets['Stock cuisine'].cell(3, 1) === 'Skyr nature', 'Serveur : stock mis à jour et ajouté');
   var su = call({ action: 'setup', token: tk });
   ok(su.ok && sheets['Ingrédients'].cell(1, 12) === 'Rôle' && sheets['Ingrédients'].cell(2, 12) === 'glucide' && sheets['Ingrédients'].cell(6, 12) === 'protéine', 'Serveur : colonnes Rôle/Rayon ajoutées, défauts proposés, valeur saisie gardée', su.message);
-  ok(!!sheets['Profils'] && call({ action: 'saveProfile', profile: { name: 'Léa', kcal: 1800, prot: 110, objectif: 'Sèche', repas: 3, marge: 5 } }).ok, 'Serveur : profil enregistré');
-  ok(call({ action: 'data' }).profiles[0].name === 'Léa', 'Serveur : profil relu');
-  ok(call({ action: 'saveProfile', profile: { name: 'X', kcal: 'abc', prot: 100 } }).code === 'VALEUR', 'Serveur : valeur invalide refusée');
+  ok(!!sheets['Profils'] && call({ action: 'saveProfile', token: tk, profile: { name: 'Léa', kcal: 1800, prot: 110, objectif: 'Sèche', repas: 3, marge: 5 } }).ok, 'Serveur : profil enregistré par l’admin');
+  ok(call({ action: 'saveProfile', token: ctk, profile: { name: 'Léa', kcal: 1700, prot: 120, objectif: 'Sèche', repas: 3, marge: 10 } }).ok, 'Serveur : profil enregistré par un client');
+  var dc = call({ action: 'data', token: ctk }), da = call({ action: 'data', token: tk });
+  ok(dc.profiles.length === 1 && dc.profiles[0].name === 'Marine' && dc.profiles[0].kcal === 1700, 'Serveur : un client ne modifie et ne voit que son propre profil', dc.profiles);
+  ok(da.profiles.length === 2 && da.profiles[0].name === 'Léa' && da.profiles[0].kcal === 1800, 'Serveur : l’admin voit tous les profils, celui de Léa intact');
+  ok(call({ action: 'saveProfile', token: tk, profile: { name: 'X', kcal: 'abc', prot: 100 } }).code === 'VALEUR', 'Serveur : valeur invalide refusée');
+  ok(call({ action: 'createAccount', token: tk, account: { id: 'paul', name: 'Paul', role: 'client', password: 'court' } }).code === 'VALEUR', 'Serveur : mot de passe trop court refusé');
+  ok(call({ action: 'createAccount', token: tk, account: { id: 'paul', name: 'Paul', role: 'client', password: 'paul-12345' } }).ok &&
+    call({ action: 'createAccount', token: tk, account: { id: 'PAUL', name: 'Paul', password: 'paul-12345' } }).code === 'DOUBLON', 'Serveur : compte créé par l’admin, doublon refusé');
+  var ptk = call({ action: 'login', id: 'paul', password: 'paul-12345' }).token;
+  ok(call({ action: 'resetPassword', token: tk, id: 'paul', password: 'nouveau-999' }).ok && call({ action: 'data', token: ptk }).code === 'NON_CONNECTE' &&
+    call({ action: 'login', id: 'paul', password: 'nouveau-999' }).ok, 'Serveur : mot de passe réinitialisé, ancienne connexion coupée');
+  ok(call({ action: 'updateAccount', token: tk, account: { id: 'paul', active: false } }).ok && call({ action: 'login', id: 'paul', password: 'nouveau-999' }).code === 'MDP_FAUX', 'Serveur : compte désactivé ne peut plus se connecter');
+  ok(call({ action: 'updateAccount', token: tk, account: { id: 'nacim', role: 'client' } }).code === 'VALEUR', 'Serveur : l’admin ne peut pas retirer ses propres droits');
+  ok(call({ action: 'changePassword', token: ctk, oldPassword: 'faux', newPassword: 'abcdefgh1' }).code === 'MDP_FAUX', 'Serveur : changement refusé si ancien mot de passe faux');
+  var cp2 = call({ action: 'changePassword', token: ctk, oldPassword: 'secret-marine', newPassword: 'marine-2026' });
+  ok(cp2.ok && call({ action: 'data', token: cp2.token }).ok && call({ action: 'data', token: ctk }).code === 'NON_CONNECTE', 'Serveur : mot de passe changé, nouveau jeton valide, ancien coupé');
+  var la = call({ action: 'listAccounts', token: tk });
+  ok(la.ok && la.accounts.length === 3 && la.accounts.every(function (a) { return !('hash' in a) && !('salt' in a); }), 'Serveur : liste des comptes sans empreinte ni sel');
   var forbidden = writes.filter(function (w) {
     return (w.sheet === 'Recettes' && ((w.c >= 7 && w.c <= 17) || w.c === 20)) || (w.sheet === 'Lignes_recette' && w.c >= 4 && w.c <= 9);
   });

@@ -7,23 +7,28 @@
  *  - noms d'onglets et ordre des colonnes inchangés ;
  *  - aucune écriture dans les colonnes calculées (Recettes G–Q et T, Lignes_recette D–I) ;
  *  - écriture uniquement sur la première ligne vide (colonne A vide) ;
- *  - code secret et jetons uniquement ici (Propriétés du script), jamais dans le navigateur.
+ *  - mots de passe jamais stockés en clair (empreinte salée dans l'onglet Comptes) ;
+ *  - jetons signés avec un secret des Propriétés du script, jamais dans le navigateur.
  */
 
 var TABS = {
   ING: 'Ingrédients', REC: 'Recettes', LIG: 'Lignes_recette',
-  ETA: 'Étapes', STO: 'Stock cuisine', PRO: 'Profils'
+  ETA: 'Étapes', STO: 'Stock cuisine', PRO: 'Profils', CPT: 'Comptes'
 };
+// Onglet Comptes : A Identifiant | B Prénom (profil) | C Rôle | D Actif | E Créé le | F Dernière connexion | G Empreinte | H Sel
+var CPT_HEAD = ['Identifiant', 'Prénom (profil)', 'Rôle', 'Actif', 'Créé le', 'Dernière connexion',
+  'Empreinte mot de passe (ne pas modifier)', 'Sel (ne pas modifier)'];
 var TOKEN_DAYS = 60;
-var MAX_FAILS = 5;          // essais de code faux avant blocage
+var MAX_FAILS = 5;          // essais de mot de passe faux avant blocage
 var LOCK_SECONDS = 15 * 60; // durée du blocage
+var HASH_ROUNDS = 300;
 
 /* ===================== Menu dans le Sheet ===================== */
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Appli recettes')
     .addItem('1. Installer / vérifier', 'installer')
-    .addItem('2. Définir le code secret', 'definirCodeSecret')
+    .addItem('2. Créer ou réinitialiser mon compte admin', 'creerCompteAdmin')
     .addToUi();
 }
 
@@ -34,22 +39,36 @@ function installer() {
   });
   var r = setup_();
   var msg = 'Installation OK.\n' + r.message;
-  if (!PropertiesService.getScriptProperties().getProperty('ADMIN_CODE')) {
-    msg += '\n\nÉtape suivante : menu Appli recettes > 2. Définir le code secret.';
+  if (!accounts_().some(function (a) { return a.role === 'admin'; })) {
+    msg += '\n\nÉtape suivante : menu Appli recettes > 2. Créer ou réinitialiser mon compte admin.';
   }
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); }
 }
 
-function definirCodeSecret() {
+function creerCompteAdmin() {
   var ui = SpreadsheetApp.getUi();
-  var res = ui.prompt('Code secret', 'Choisis un code (au moins 6 caractères). Il débloque les modifications dans l’appli.', ui.ButtonSet.OK_CANCEL);
-  if (res.getSelectedButton() !== ui.Button.OK) return;
-  var code = res.getResponseText().trim();
-  if (code.length < 6) { ui.alert('Code trop court (6 caractères minimum).'); return; }
-  var props = PropertiesService.getScriptProperties();
-  props.setProperty('ADMIN_CODE', code);
-  props.setProperty('TOKEN_SECRET', Utilities.getUuid() + Utilities.getUuid()); // déconnecte les anciens appareils
-  ui.alert('Code enregistré. Les appareils déjà débloqués devront ressaisir le code.');
+  var r1 = ui.prompt('Compte admin (1/3)', 'Identifiant de connexion (lettres, chiffres, point ou tiret ; ex. nacim) :', ui.ButtonSet.OK_CANCEL);
+  if (r1.getSelectedButton() !== ui.Button.OK) return;
+  var id = normId_(r1.getResponseText());
+  if (!id) { ui.alert('Identifiant invalide (3 à 30 caractères : lettres, chiffres, point, tiret).'); return; }
+  var r2 = ui.prompt('Compte admin (2/3)', 'Prénom du profil associé (tel qu’écrit dans l’onglet Profils, ex. Nacim) :', ui.ButtonSet.OK_CANCEL);
+  if (r2.getSelectedButton() !== ui.Button.OK) return;
+  var name = r2.getResponseText().trim();
+  if (!name) { ui.alert('Prénom obligatoire.'); return; }
+  var r3 = ui.prompt('Compte admin (3/3)', 'Mot de passe (8 caractères minimum). Il ne sera pas visible ensuite : note-le.', ui.ButtonSet.OK_CANCEL);
+  if (r3.getSelectedButton() !== ui.Button.OK) return;
+  try {
+    var existing = findAccount_(id);
+    withLock_(function () {
+      if (existing) {
+        setPassword_(existing.row, r3.getResponseText());
+        sheet_(TABS.CPT).getRange(existing.row, 2, 1, 3).setValues([[name, 'admin', 'Oui']]);
+      } else {
+        createAccount_({ id: id, name: name, role: 'admin', password: r3.getResponseText() });
+      }
+    });
+    ui.alert('Compte admin « ' + id + ' » prêt. Connecte-toi dans l’appli avec cet identifiant et ce mot de passe.');
+  } catch (e) { ui.alert(e.message); }
 }
 
 /* ===================== Points d'entrée Web ===================== */
@@ -69,15 +88,22 @@ function handle_(req) {
   try {
     var action = req.action || 'data';
     var out;
+    var me;
     switch (action) {
       case 'ping': out = { pong: true }; break;
-      case 'data': out = getData_(); break;
-      case 'unlock': out = unlock_(req.code); break;
-      case 'check': out = { admin: isAdmin_(req.token) }; break;
-      case 'saveProfile': out = withLock_(function () { return saveProfile_(req.profile); }); break;
+      case 'login': out = withLock_(function () { return login_(req.id, req.password); }); break;
+      case 'data': me = auth_(req.token); out = getData_(me); out.me = publicMe_(me); break;
+      case 'check': me = auth_(req.token); out = { me: publicMe_(me) }; break;
+      case 'changePassword':
+        me = auth_(req.token);
+        out = withLock_(function () { return changePassword_(me, req.oldPassword, req.newPassword); }); break;
+      case 'saveProfile':
+        me = auth_(req.token);
+        out = withLock_(function () { return saveProfile_(me, req.profile); }); break;
       default:
-        requireAdmin_(req.token);
-        out = withLock_(function () { return adminAction_(action, req); });
+        me = auth_(req.token);
+        if (me.role !== 'admin') throw err_('NON_AUTORISE', 'Action réservée à l’admin.');
+        out = withLock_(function () { return adminAction_(action, req, me); });
     }
     out.ok = true;
     return json_(out);
@@ -86,8 +112,12 @@ function handle_(req) {
   }
 }
 
-function adminAction_(action, req) {
+function adminAction_(action, req, me) {
   switch (action) {
+    case 'listAccounts': return { accounts: accounts_().map(publicAccount_) };
+    case 'createAccount': return createAccount_(req.account);
+    case 'updateAccount': return updateAccount_(req.account, me);
+    case 'resetPassword': return resetPassword_(req.id, req.password);
     case 'setup': return setup_();
     case 'addIngredient': return addIngredient_(req.ingredient);
     case 'updateIngredient': return updateIngredient_(req.row, req.name, req.ingredient);
@@ -112,41 +142,142 @@ function withLock_(fn) {
   try { return fn(); } finally { lock.releaseLock(); }
 }
 
-/* ===================== Accès administrateur ===================== */
+/* ===================== Comptes (identifiant + mot de passe) ===================== */
 
-function unlock_(code) {
-  var cache = CacheService.getScriptCache();
-  var fails = Number(cache.get('fails') || 0);
-  if (fails >= MAX_FAILS) throw err_('BLOQUE', 'Trop d’essais. Réessaie dans 15 minutes.');
-  var props = PropertiesService.getScriptProperties();
-  var real = props.getProperty('ADMIN_CODE');
-  if (!real) throw err_('PAS_DE_CODE', 'Aucun code secret défini. Dans le Sheet : menu Appli recettes > Définir le code secret.');
-  if (String(code || '') !== real) {
-    cache.put('fails', String(fails + 1), LOCK_SECONDS);
-    throw err_('CODE_FAUX', 'Code incorrect.');
-  }
-  cache.remove('fails');
-  var exp = Date.now() + TOKEN_DAYS * 86400000;
-  return { token: exp + '.' + sign_(String(exp)), expires: exp };
+function normId_(s) {
+  var id = String(s || '').trim().toLowerCase();
+  return /^[a-z0-9._-]{3,30}$/.test(id) ? id : '';
 }
 
-function sign_(s) {
+function ensureAccounts_() {
+  var ss = SpreadsheetApp.getActive();
+  if (ss.getSheetByName(TABS.CPT)) return false;
+  var s = ss.insertSheet(TABS.CPT);
+  s.getRange(1, 1, 1, CPT_HEAD.length).setValues([CPT_HEAD]).setFontWeight('bold');
+  s.setFrozenRows(1);
+  return true;
+}
+
+function accounts_() {
+  if (!SpreadsheetApp.getActive().getSheetByName(TABS.CPT)) return [];
+  return rows_(TABS.CPT, 8).filter(function (r) { return s_(r[0]).trim(); }).map(function (r) {
+    return { row: r.row, id: s_(r[0]).trim().toLowerCase(), name: s_(r[1]).trim(),
+      role: s_(r[2]).trim().toLowerCase() === 'admin' ? 'admin' : 'client',
+      active: s_(r[3]).trim().toLowerCase() !== 'non', created: s_(r[4]), lastLogin: s_(r[5]),
+      hash: s_(r[6]), salt: s_(r[7]) };
+  });
+}
+function findAccount_(id) {
+  id = String(id || '').trim().toLowerCase();
+  return accounts_().filter(function (a) { return a.id === id; })[0] || null;
+}
+function publicAccount_(a) {
+  return { id: a.id, name: a.name, role: a.role, active: a.active, created: a.created, lastLogin: a.lastLogin };
+}
+function publicMe_(me) { return { id: me.id, name: me.name, role: me.role }; }
+
+function secret_() {
   var props = PropertiesService.getScriptProperties();
   var secret = props.getProperty('TOKEN_SECRET');
   if (!secret) { secret = Utilities.getUuid() + Utilities.getUuid(); props.setProperty('TOKEN_SECRET', secret); }
-  return Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(s, secret));
+  return secret;
+}
+function hmac_(s, key) { return Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(s, key)); }
+
+// Empreinte salée et répétée : le mot de passe n'est jamais stocké en clair.
+function hash_(password, salt) {
+  var h = String(password);
+  for (var i = 0; i < HASH_ROUNDS; i++) h = hmac_(h + '|' + i, salt);
+  return h;
 }
 
-function isAdmin_(token) {
-  if (!token) return false;
-  var parts = String(token).split('.');
-  if (parts.length !== 2) return false;
-  if (Number(parts[0]) < Date.now()) return false;
-  return sign_(parts[0]) === parts[1];
+function checkPassword_(p) {
+  p = String(p || '');
+  if (p.length < 8) throw err_('VALEUR', 'Mot de passe trop court (8 caractères minimum).');
+  if (p.length > 100) throw err_('VALEUR', 'Mot de passe trop long.');
+  return p;
 }
 
-function requireAdmin_(token) {
-  if (!isAdmin_(token)) throw err_('NON_AUTORISE', 'Modifications verrouillées : saisis ton code secret.');
+function setPassword_(row, password) {
+  var salt = Utilities.getUuid();
+  sheet_(TABS.CPT).getRange(row, 7, 1, 2).setValues([[hash_(checkPassword_(password), salt), salt]]);
+}
+
+function createAccount_(a) {
+  ensureAccounts_();
+  var id = normId_(a && a.id);
+  if (!id) throw err_('VALEUR', 'Identifiant invalide : 3 à 30 caractères (lettres, chiffres, point, tiret), sans espace ni accent.');
+  var name = String(a.name || '').trim();
+  if (!name) throw err_('VALEUR', 'Le prénom du profil est obligatoire.');
+  if (findAccount_(id)) throw err_('DOUBLON', 'Cet identifiant existe déjà.');
+  checkPassword_(a.password);
+  var s = sheet_(TABS.CPT);
+  var r = firstEmptyRow_(s, 0);
+  s.getRange(r, 1, 1, 6).setValues([[id, name, a.role === 'admin' ? 'admin' : 'client', 'Oui', new Date(), '']]);
+  setPassword_(r, a.password);
+  return { row: r, id: id };
+}
+
+function updateAccount_(a, me) {
+  var acc = findAccount_(a && a.id);
+  if (!acc) throw err_('INTROUVABLE', 'Compte introuvable.');
+  var role = a.role === undefined ? acc.role : (a.role === 'admin' ? 'admin' : 'client');
+  var active = a.active === undefined ? acc.active : !!a.active;
+  if (acc.id === me.id && (role !== 'admin' || !active)) throw err_('VALEUR', 'Tu ne peux pas retirer tes propres droits admin.');
+  var name = a.name === undefined ? acc.name : String(a.name).trim();
+  if (!name) throw err_('VALEUR', 'Le prénom du profil est obligatoire.');
+  sheet_(TABS.CPT).getRange(acc.row, 2, 1, 3).setValues([[name, role, active ? 'Oui' : 'Non']]);
+  return { id: acc.id };
+}
+
+function resetPassword_(id, password) {
+  var acc = findAccount_(id);
+  if (!acc) throw err_('INTROUVABLE', 'Compte introuvable.');
+  setPassword_(acc.row, password); // nouveau sel : les anciennes connexions de ce compte sont coupées
+  return { id: acc.id };
+}
+
+function changePassword_(me, oldPassword, newPassword) {
+  var acc = findAccount_(me.id);
+  if (!acc || hash_(String(oldPassword || ''), acc.salt) !== acc.hash) throw err_('MDP_FAUX', 'Mot de passe actuel incorrect.');
+  setPassword_(acc.row, newPassword);
+  return { token: makeToken_(findAccount_(me.id)) };
+}
+
+function makeToken_(acc) {
+  var exp = Date.now() + TOKEN_DAYS * 86400000;
+  var payload = acc.id + '|' + exp + '|' + acc.salt.slice(0, 8);
+  return payload + '|' + hmac_(payload, secret_());
+}
+
+function login_(id, password) {
+  id = String(id || '').trim().toLowerCase();
+  if (!id || !password) throw err_('VALEUR', 'Saisis ton identifiant et ton mot de passe.');
+  var cache = CacheService.getScriptCache();
+  var key = 'fails:' + id;
+  var fails = Number(cache.get(key) || 0);
+  if (fails >= MAX_FAILS) throw err_('BLOQUE', 'Trop d’essais. Réessaie dans 15 minutes.');
+  if (!accounts_().length) throw err_('PAS_DE_COMPTE', 'Aucun compte n’existe encore. Dans le Sheet : menu Appli recettes > 2. Créer ou réinitialiser mon compte admin.');
+  var acc = findAccount_(id);
+  if (!acc || !acc.active || !acc.salt || hash_(String(password), acc.salt) !== acc.hash) {
+    cache.put(key, String(fails + 1), LOCK_SECONDS);
+    throw err_('MDP_FAUX', 'Identifiant ou mot de passe incorrect.');
+  }
+  cache.remove(key);
+  sheet_(TABS.CPT).getRange(acc.row, 6).setValue(new Date());
+  return { token: makeToken_(acc), me: publicMe_(acc) };
+}
+
+// Vérifie le jeton et renvoie le compte (rôle et état relus dans le Sheet à chaque appel).
+function auth_(token) {
+  var p = String(token || '').split('|');
+  var fail = err_('NON_CONNECTE', 'Connexion expirée : reconnecte-toi.');
+  if (p.length !== 4) throw fail;
+  if (hmac_(p[0] + '|' + p[1] + '|' + p[2], secret_()) !== p[3]) throw fail;
+  if (Number(p[1]) < Date.now()) throw fail;
+  var acc = findAccount_(p[0]);
+  if (!acc || !acc.active || acc.salt.slice(0, 8) !== p[2]) throw fail;
+  return acc;
 }
 
 /* ===================== Lecture ===================== */
@@ -167,7 +298,7 @@ function rows_(name, ncol) {
 function n_(v) { return v === '' || v === null ? null : (typeof v === 'number' ? v : Number(String(v).replace(',', '.'))); }
 function s_(v) { return v instanceof Date ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(v == null ? '' : v); }
 
-function getData_() {
+function getData_(me) {
   var ingredients = rows_(TABS.ING, 13).filter(function (r) { return s_(r[0]).trim(); }).map(function (r) {
     return { row: r.row, name: s_(r[0]), etat: s_(r[1]), kcal: n_(r[2]), p: n_(r[3]), g: n_(r[4]), l: n_(r[5]),
       f: n_(r[6]), prix: n_(r[7]), magasin: s_(r[8]), source: s_(r[9]), remarque: s_(r[10]),
@@ -196,6 +327,8 @@ function getData_() {
         repas: n_(r[4]), marge: n_(r[5]), maj: s_(r[6]) };
     });
   }
+  // Un client ne voit que son propre profil ; l'admin les voit tous.
+  if (me && me.role !== 'admin') profiles = profiles.filter(function (p) { return p.name === me.name; });
   return { ingredients: ingredients, recipes: recipes, stock: stock, profiles: profiles,
     hasRoleColumns: s_(sheet_(TABS.ING).getRange(1, 12).getValue()) !== '',
     fetchedAt: new Date().toISOString() };
@@ -348,8 +481,9 @@ function setStock_(items) {
   return { count: (items || []).length };
 }
 
-function saveProfile_(p) {
+function saveProfile_(me, p) {
   var name = String(p && p.name || '').trim();
+  if (me.role !== 'admin') name = me.name; // un client ne modifie que son propre profil
   if (!name) throw err_('VALEUR', 'Le prénom est obligatoire.');
   ensureProfiles_();
   var s = sheet_(TABS.PRO);
@@ -397,9 +531,10 @@ function setup_() {
     if (!s_(r[11]) || !s_(r[12])) { s.getRange(r.row, 12, 1, 2).setValues([[role, rayon]]); filled++; }
   });
   var createdProfiles = ensureProfiles_();
+  var createdAccounts = ensureAccounts_();
   return { message: (added ? 'Colonnes Rôle et Rayon ajoutées. ' : 'Colonnes Rôle et Rayon déjà présentes. ') +
     filled + ' ingrédient(s) complété(s) avec une valeur par défaut, à corriger si besoin.' +
-    (createdProfiles ? ' Onglet Profils créé.' : '') };
+    (createdProfiles ? ' Onglet Profils créé.' : '') + (createdAccounts ? ' Onglet Comptes créé.' : '') };
 }
 
 // Même règle que calc.js (suggestRole) : garder les deux synchronisées.

@@ -24,12 +24,14 @@ Durée : environ 15 minutes, une seule fois. Tout est gratuit.
 5. Relance **Appli recettes › 1. Installer / vérifier**. Un message confirme : colonnes Rôle et Rayon
    ajoutées, onglet Profils créé. Vérifie les rôles proposés dans les colonnes L et M et corrige-les si besoin.
 
-## Étape 3 — Choisir le code secret (1 min)
+## Étape 3 — Créer ton compte admin (1 min)
 
-1. **Appli recettes › 2. Définir le code secret**.
-2. Tape un code d'au moins 6 caractères, que tu ne donnes à personne. Il débloque les modifications dans l'appli.
-   Il reste dans Google, jamais dans le téléphone. Pour le changer : refais cette étape (tous les téléphones
-   devront le ressaisir).
+1. **Appli recettes › 2. Créer ou réinitialiser mon compte admin**.
+2. Tape ton identifiant (ex. `nacim`), le prénom de ton profil (ex. `Nacim`), puis un mot de passe
+   d'au moins 8 caractères. Le mot de passe n'est jamais stocké en clair : l'onglet **Comptes** ne garde
+   qu'une empreinte.
+3. Mot de passe admin oublié : refais cette étape avec le même identifiant.
+4. Les comptes de tes proches se créent ensuite dans l'appli : **Plus › Comptes utilisateurs**.
 
 ## Étape 4 — Publier le serveur (2 min)
 
@@ -39,15 +41,19 @@ Durée : environ 15 minutes, une seule fois. Tout est gratuit.
 4. **Déployer**. Copie l'**URL de l'application Web** (elle se termine par `/exec`).
    Ton Sheet reste privé : seule l'appli, via ce script, peut le lire.
 
-## Étape 5 — Ouvrir l'appli et créer le lien à partager
+## Étape 5 — Se connecter et inviter ses proches
 
-1. Ouvre l'appli (lien GitHub Pages donné par Claude), va dans **Plus › Connexion au Sheet**, colle l'URL
-   `/exec`, puis **Enregistrer et tester**.
-2. Le lien à partager à tes proches est l'adresse de l'appli suivie de `#api=` et de l'identifiant (la partie
-   entre `/s/` et `/exec` dans l'URL), par exemple :
-   `https://TONCOMPTE.github.io/recettes-macros/#api=AKfycb...`
-3. Chacun ouvre ce lien une fois, choisit son profil, puis installe l'appli sur l'écran d'accueil
-   (voir le mode d'emploi dans l'appli : **Plus › Mode d'emploi**).
+1. L'appli est déjà reliée à ton serveur (son identifiant est dans `web/api.js`, `DEFAULT_API`) :
+   ouvre **https://alagustavonb.github.io/recettes-macros/** et connecte-toi avec ton compte admin.
+2. **Plus › Comptes utilisateurs** : crée un compte par personne (identifiant, prénom du profil, mot de passe
+   provisoire, rôle client).
+3. Envoie-lui le lien de l'appli, son identifiant et son mot de passe. Elle se connecte, règle ses cibles,
+   installe l'appli sur l'écran d'accueil et peut changer son mot de passe dans **Plus › Mon compte**.
+
+Sans identifiant ni mot de passe, le serveur ne renvoie aucune donnée : le lien seul ne suffit plus.
+
+Si tu refais un **Nouveau déploiement** (nouvelle URL `/exec`), il faut mettre à jour `DEFAULT_API` dans
+`web/api.js` (demande à Claude) ; en attendant, chacun peut coller l'URL dans **Connexion › Paramètres de connexion**.
 
 ## Plus tard : mettre à jour le serveur
 

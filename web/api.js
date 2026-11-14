@@ -11,16 +11,20 @@
     var e = new Error(message); e.code = code || 'ERREUR'; e.technical = technical || ''; return e;
   }
 
+  // Serveur par défaut : l'appli installée s'y relie toute seule. Ce n'est pas un secret :
+  // sans identifiant ni mot de passe, le serveur ne renvoie aucune donnée.
+  var DEFAULT_API = 'AKfycbyEtejqEfaRF6cFAtgQTG1OEi0Jcx1hXFg8i3QKleYewunYO9TErd0g_Nn_o6d-5v8oAQ';
+
   function apiUrl() {
-    var v = store.get('apiUrl', '');
+    var v = store.get('apiUrl', '') || DEFAULT_API;
     if (!v) return '';
     if (/^https?:\/\//.test(v)) return v;
     return 'https://script.google.com/macros/s/' + v + '/exec';
   }
 
   // Erreurs « logiques » renvoyées par le serveur : inutile de réessayer.
-  var NO_RETRY = { CODE_FAUX: 1, BLOQUE: 1, NON_AUTORISE: 1, DOUBLON: 1, VALEUR: 1, INTROUVABLE: 1, DECALE: 1,
-    PLEIN: 1, PAS_DE_CODE: 1, DRIVE: 1, ACTION: 1, HORS_LIGNE: 1 };
+  var NO_RETRY = { MDP_FAUX: 1, BLOQUE: 1, NON_AUTORISE: 1, NON_CONNECTE: 1, DOUBLON: 1, VALEUR: 1, INTROUVABLE: 1, DECALE: 1,
+    PLEIN: 1, PAS_DE_COMPTE: 1, DRIVE: 1, ACTION: 1, HORS_LIGNE: 1 };
 
   async function call(action, payload, opts) {
     opts = opts || {};
@@ -54,10 +58,9 @@
 
   /* ---------------- Serveur de démonstration ---------------- */
   var Demo = {
-    code: 'demo123',
     data: function () {
       var d = store.get('demoData', null);
-      if (!d) { d = JSON.parse(JSON.stringify(root.DEMO_DATA)); store.set('demoData', d); }
+      if (!d || !d.accounts) { d = JSON.parse(JSON.stringify(root.DEMO_DATA)); store.set('demoData', d); }
       return d;
     },
     save: function (d) { store.set('demoData', d); },
@@ -65,20 +68,69 @@
       await sleep(150);
       var d = this.data();
       function fail(code, msg) { throw ApiError(msg, code); }
-      function admin() { if (p.token !== 'demo-token') fail('NON_AUTORISE', 'Modifications verrouillées : saisis ton code secret.'); }
+      function acc(id) { return d.accounts.filter(function (a) { return a.id === id; })[0]; }
+      function pub(a) { return { id: a.id, name: a.name, role: a.role, active: a.active !== false, lastLogin: a.lastLogin || '' }; }
+      function me() {
+        var a = acc(String(p.token || '').replace(/^demo:/, ''));
+        if (!a || a.active === false) fail('NON_CONNECTE', 'Connexion expirée : reconnecte-toi.');
+        return a;
+      }
+      function admin() { if (me().role !== 'admin') fail('NON_AUTORISE', 'Action réservée à l’admin.'); }
       var n = Calc.norm;
       switch (action) {
-        case 'data':
-          d.fetchedAt = new Date().toISOString();
-          return Object.assign({ ok: true }, JSON.parse(JSON.stringify(d)));
-        case 'unlock':
-          if (p.code !== this.code) fail('CODE_FAUX', 'Code incorrect.');
-          return { ok: true, token: 'demo-token', expires: Date.now() + 864e5 };
-        case 'check': return { ok: true, admin: p.token === 'demo-token' };
+        case 'login': {
+          var a = acc(String(p.id || '').trim().toLowerCase());
+          if (!a || a.active === false || a.password !== p.password) fail('MDP_FAUX', 'Identifiant ou mot de passe incorrect.');
+          a.lastLogin = new Date().toISOString().slice(0, 10); this.save(d);
+          return { ok: true, token: 'demo:' + a.id, me: { id: a.id, name: a.name, role: a.role } };
+        }
+        case 'data': {
+          var m = me();
+          var out = JSON.parse(JSON.stringify(d)); delete out.accounts;
+          if (m.role !== 'admin') out.profiles = out.profiles.filter(function (x) { return x.name === m.name; });
+          out.fetchedAt = new Date().toISOString(); out.me = { id: m.id, name: m.name, role: m.role };
+          return Object.assign({ ok: true }, out);
+        }
+        case 'check': { var c = me(); return { ok: true, me: { id: c.id, name: c.name, role: c.role } }; }
+        case 'changePassword': {
+          var cm = me();
+          if (cm.password !== p.oldPassword) fail('MDP_FAUX', 'Mot de passe actuel incorrect.');
+          if (String(p.newPassword || '').length < 8) fail('VALEUR', 'Mot de passe trop court (8 caractères minimum).');
+          cm.password = p.newPassword; this.save(d); return { ok: true, token: 'demo:' + cm.id };
+        }
         case 'saveProfile': {
-          var pr = d.profiles.filter(function (x) { return x.name === p.profile.name; })[0];
-          if (pr) Object.assign(pr, p.profile); else d.profiles.push(Object.assign({ row: d.profiles.length + 2 }, p.profile));
+          var sm = me();
+          var prof = Object.assign({}, p.profile, sm.role === 'admin' ? {} : { name: sm.name });
+          var pr = d.profiles.filter(function (x) { return x.name === prof.name; })[0];
+          if (pr) Object.assign(pr, prof); else d.profiles.push(Object.assign({ row: d.profiles.length + 2 }, prof));
           this.save(d); return { ok: true };
+        }
+        case 'listAccounts': admin(); return { ok: true, accounts: d.accounts.map(pub) };
+        case 'createAccount': {
+          admin();
+          var na = p.account || {};
+          var id = String(na.id || '').trim().toLowerCase();
+          if (!/^[a-z0-9._-]{3,30}$/.test(id)) fail('VALEUR', 'Identifiant invalide : 3 à 30 caractères (lettres, chiffres, point, tiret), sans espace ni accent.');
+          if (acc(id)) fail('DOUBLON', 'Cet identifiant existe déjà.');
+          if (!String(na.name || '').trim()) fail('VALEUR', 'Le prénom du profil est obligatoire.');
+          if (String(na.password || '').length < 8) fail('VALEUR', 'Mot de passe trop court (8 caractères minimum).');
+          d.accounts.push({ id: id, name: na.name.trim(), role: na.role === 'admin' ? 'admin' : 'client', active: true, password: na.password });
+          this.save(d); return { ok: true, id: id };
+        }
+        case 'updateAccount': {
+          var self = me(); admin();
+          var ua = acc(p.account.id); if (!ua) fail('INTROUVABLE', 'Compte introuvable.');
+          var role = p.account.role === undefined ? ua.role : p.account.role;
+          var active = p.account.active === undefined ? ua.active !== false : !!p.account.active;
+          if (ua.id === self.id && (role !== 'admin' || !active)) fail('VALEUR', 'Tu ne peux pas retirer tes propres droits admin.');
+          ua.role = role; ua.active = active; if (p.account.name !== undefined) ua.name = String(p.account.name).trim();
+          this.save(d); return { ok: true };
+        }
+        case 'resetPassword': {
+          admin();
+          var ra = acc(p.id); if (!ra) fail('INTROUVABLE', 'Compte introuvable.');
+          if (String(p.password || '').length < 8) fail('VALEUR', 'Mot de passe trop court (8 caractères minimum).');
+          ra.password = p.password; this.save(d); return { ok: true };
         }
         case 'setup':
           admin();
