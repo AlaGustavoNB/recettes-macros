@@ -1,11 +1,14 @@
 # Recettes & macros
 
-Appli web perso (installable sur téléphone) qui lit et écrit une base de recettes dans un Google Sheet :
-recalcul des quantités à kcal choisies avec protéines fixes, pesée cru/cuit, minuteurs, planning de la
-semaine et liste de courses avec stock et prix.
+Appli web (installable sur téléphone) pour partager un catalogue de recettes entre proches, chacun avec
+son compte et ses objectifs : quantités recalculées à ses kcal avec protéines fixes, planning de la semaine,
+foyers avec liste de courses commune (paquets, magasins, stock), cuisine guidée, avis et propositions.
+Les données vivent dans un Google Sheet privé.
 
-- Installation : [INSTALLATION.md](INSTALLATION.md)
+- Appli : https://alagustavonb.github.io/recettes-macros/ (démo : `?demo=1`)
+- Installation / mise à jour : [INSTALLATION.md](INSTALLATION.md)
+- Ce qui a été décidé : [CAHIER.md](CAHIER.md)
 - Fonctionnement technique : [NOTES.md](NOTES.md)
-- Mode d'emploi : `web/guide.html`
+- Mode d'emploi : `web/guide.html` · Confidentialité : `web/confidentialite.html`
 
 Aucune donnée personnelle dans ce dépôt : les données de `web/demo-data.js` sont fictives.

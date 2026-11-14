@@ -112,16 +112,53 @@ ok(C.parsePrice('Promo !').prixKg === null, 'Pas de prix inventé');
 var ps = C.parseStock('500 g de riz basmati cru, 1 kg de filet de poulet', D.ingredients);
 ok(ps.items.length === 2 && ps.items[1].qty === 1000 && ps.items[1].ing === 'Filet de poulet cru', 'Stock dicté reconnu', ps);
 
+/* 12. Objectifs proposés */
+var tg = C.targets({ sexe: 'H', annee: 1990, taille: 180, poids: 80, seances: 3, metier: 'assis', objectif: 'Maintien' }, 2026);
+ok(tg.kcal === 2360 && tg.prot === 128 && tg.lip === 72 && tg.glu === 300, 'Objectifs : 2 360 kcal, 128 g prot., 72 g lip., 300 g gluc. (H 36 ans 80 kg)', tg);
+var tgs = C.targets({ sexe: 'H', annee: 1990, taille: 180, poids: 80, seances: 3, metier: 'assis', objectif: 'Sèche' }, 2026);
+ok(tgs.kcal === 1890 && tgs.prot === 160, 'Objectifs sèche : −20 % et 2 g/kg', tgs);
+var tgf = C.targets({ sexe: 'F', annee: 1996, taille: 165, poids: 60, seances: 0, metier: 'physique', objectif: 'Masse', protGkg: 1.5 }, 2026);
+ok(tgf.prot === 90 && tgf.kcal === Math.round((600 + 1031.25 - 150 - 161) * 1.55 * 1.1 / 10) * 10, 'Objectifs femme, métier physique, masse, protéines g/kg choisies', tgf);
+ok(C.targets({ poids: 80 }) === null, 'Objectifs : rien de proposé sans taille/âge');
+
+/* 13. Poids : tendance */
+var wt = C.weightTrend([{ date: '2026-10-19', kg: 80 }, { date: '2026-10-21', kg: 80.2 }, { date: '2026-10-27', kg: 80 }, { date: '2026-11-03', kg: 80.1 }], 'Sèche', 2000);
+ok(wt.weeks.length === 3 && wt.suggestion && wt.suggestion.delta === -100 && wt.suggestion.kcal === 1900, 'Poids stable en sèche → proposer −100 kcal', wt);
+var wt2 = C.weightTrend([{ date: '2026-10-19', kg: 80 }, { date: '2026-10-26', kg: 79.6 }, { date: '2026-11-02', kg: 79.2 }], 'Sèche', 2000);
+ok(wt2.suggestion === null, 'Perte de 0,5 %/semaine en sèche → pas d’ajustement', wt2.rate);
+ok(C.weightTrend([{ date: '2026-11-02', kg: 80 }], 'Sèche', 2000).suggestion === null, 'Moins de 3 semaines → pas de proposition');
+
+/* 14. Paquets et prix par magasin */
+var offers = [{ ing: 'Riz basmati cru', magasin: 'Lidl', pack: 1000, prix: 2.5 }, { ing: 'Riz basmati cru', magasin: 'Leclerc', pack: 500, prix: 1.5 }];
+var pl = C.priceLine('Riz basmati cru', 1340, idx.exact['Riz basmati cru'], offers);
+ok(pl.packs === 2 && pl.magasin === 'Lidl' && near(pl.cost, 5) && pl.bought === 2000, 'Paquets : 1 340 g → 2 paquets de 1 kg chez Lidl, 5 €', pl);
+var pl2 = C.priceLine('Filet de poulet cru', 450, idx.exact['Filet de poulet cru'], offers);
+ok(pl2.packs === null && near(pl2.cost, 4.275), 'Sans paquet connu : prix au kg de l’onglet Ingrédients', pl2);
+var fl = C.foyerList({ 'Riz basmati cru': 1340, 'Filet de poulet cru': 450 }, idx, { offers: offers, stock: { 'Riz basmati cru': 400 }, useStock: true });
+ok(fl.lines[1].buy === 940 && fl.lines[1].packs === 1 && near(fl.total, 2.5 + 4.275), 'Liste du foyer : stock retranché puis paquets', fl);
+
+/* 15. Exclusions, remplacement, semaine automatique */
+var idx2 = C.index(D.ingredients.map(function (i) { return i.name === 'Fromage râpé (démo)' ? Object.assign({}, i, { allergenes: 'lactose' }) : i; }));
+ok(/Fromage/.test(C.excludedBy(tacos, idx2, { allergies: 'lactose' }) || ''), 'Allergie lactose → tacos exclus');
+ok(C.excludedBy(ex, idx2, { allergies: 'lactose' }) === null, 'Allergie lactose → poulet riz gardé');
+ok(C.excludedBy(ex, idx2, { exclus: 'Brocoli cuit' }) === 'Brocoli cuit', 'Ingrédient exclu → recette masquée');
+var rw = C.replaceWith(ex, idx, { kcal: 528.75, margin: 0.1 }, 'Riz basmati cru', 'Pâtes complètes crues (démo)');
+ok(rw && rw.by === 'Pâtes complètes crues (démo)' && Math.abs(rw.after.kcal - 528.75) / 528.75 <= 0.1 && Math.abs(rw.after.p - t.p) / t.p <= 0.1, 'Remplacer le riz par des pâtes : kcal et protéines gardées', rw && rw.after);
+var cand = C.replacementCandidates(ex, idx, { kcal: 528.75 }, 'Filet de poulet cru');
+ok(cand.length >= 1 && cand.every(function (x) { return C.roleOf(C.find(idx, x.by)) === 'protéine'; }), 'Remplaçants proposés : même rôle (protéine)', cand.map(function (x) { return x.by; }));
+var ap = C.autoPlan(D.recipes, { meals: 10, avis: { 'Tacos bœuf (démo)': { fav: true } }, exclude: function (r) { return r.name === 'Cabillaud patate douce (démo)'; }, seed: 3 });
+ok(ap.reduce(function (s, x) { return s + x.meals; }, 0) === 10 && ap.every(function (x) { return x.recipe !== 'Cabillaud patate douce (démo)'; }), 'Semaine proposée : 10 repas, recette exclue absente', ap);
+
 /* ===== Serveur Apps Script simulé ===== */
 function runServerTests(code) {
-  var writes = [];
-  function Sheet(name, rows, formulaRows, formulaCols) {
-    this.name = name; this.rows = rows; this.fr = formulaRows || 0; this.fc = formulaCols || [];
-  }
+  var writes = [], mails = [];
+  function Sheet(name, rows, formulaRows) { this.name = name; this.rows = rows; this.fr = formulaRows || 0; }
   Sheet.prototype.getName = function () { return this.name; };
   Sheet.prototype.getMaxRows = function () { return Math.max(1000, this.rows.length); };
+  Sheet.prototype.getMaxColumns = function () { return 26; };
+  Sheet.prototype.insertColumnsAfter = function () {};
   Sheet.prototype.getLastRow = function () {
-    var last = this.fr; // les lignes de formules comptent comme non vides
+    var last = this.fr;
     for (var i = this.rows.length - 1; i >= 0; i--) if (this.rows[i].some(function (v) { return v !== '' && v != null; })) { last = Math.max(last, i + 1); break; }
     return last;
   };
@@ -144,10 +181,10 @@ function runServerTests(code) {
   Sheet.prototype.copyFormatToRange = function () {};
   Sheet.prototype.setFrozenRows = function () {};
   var I = [['Nom']].concat(DEMO_DATA.ingredients.slice(0, 4).map(function (i) { return [i.name, i.etat, i.kcal, i.p, i.g, i.l, i.f, i.prix, i.magasin, i.source, i.remarque]; }));
-  var R = [['Nom'], ['Poulet riz brocoli (exemple)', 1, 'Déjeuner', 'Maintien', 10, 20, 528.75, 44.325, 64.5, 8.525, 5.55, 528.75, 44.325, 64.5, 8.525, 2.11, 2.11, 'Non', 'À tester', 'OK', 'Recette d’exemple']];
-  var Lg = [['Recette'], ['Poulet riz brocoli (exemple)', 'Riz basmati cru', 75], ['Poulet riz brocoli (exemple)', 'Filet de poulet cru', 150],
-    ['Poulet riz brocoli (exemple)', 'Brocoli cuit', 150], ['Poulet riz brocoli (exemple)', "Huile d'olive", 5]];
-  var E = [['Recette'], ['Poulet riz brocoli (exemple)', 1, 'Cuire le riz', 12]];
+  var EX = 'Poulet riz brocoli (exemple)';
+  var R = [['Nom'], [EX, 1, 'Déjeuner', 'Maintien', 10, 20, 528.75, 44.325, 64.5, 8.525, 5.55, 528.75, 44.325, 64.5, 8.525, 2.11, 2.11, 'Non', 'À tester', 'OK', 'Recette d’exemple']];
+  var Lg = [['Recette'], [EX, 'Riz basmati cru', 75], [EX, 'Filet de poulet cru', 150], [EX, 'Brocoli cuit', 150], [EX, "Huile d'olive", 5]];
+  var E = [['Recette'], [EX, 1, 'Cuire le riz', 12]];
   var St = [['Ingrédient'], ['Riz basmati cru', 500, '', 'Stock d’exemple']];
   var sheets = { 'Ingrédients': new Sheet('Ingrédients', I, 0), 'Recettes': new Sheet('Recettes', R, 201), 'Lignes_recette': new Sheet('Lignes_recette', Lg, 501),
     'Étapes': new Sheet('Étapes', E, 0), 'Stock cuisine': new Sheet('Stock cuisine', St, 0) };
@@ -160,79 +197,153 @@ function runServerTests(code) {
   };
   window.PropertiesService = { getScriptProperties: function () { return {
     getProperty: function (k) { return k in props ? props[k] : null; }, setProperty: function (k, v) { props[k] = v; } }; } };
-  window.CacheService = { getScriptCache: function () { return { get: function (k) { return cache[k] || null; }, put: function (k, v) { cache[k] = v; }, remove: function (k) { delete cache[k]; } }; } };
+  window.CacheService = { getScriptCache: function () { return { get: function (k) { return k in cache ? cache[k] : null; }, put: function (k, v) { cache[k] = v; }, remove: function (k) { delete cache[k]; } }; } };
   window.LockService = { getScriptLock: function () { return { tryLock: function () { return true; }, releaseLock: function () {} }; } };
-  window.Utilities = { getUuid: function () { return Math.random().toString(36).slice(2); },
+  window.Utilities = { getUuid: function () { return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2); },
     computeHmacSha256Signature: function (s, k) { var h = 0, x = s + '|' + k; for (var i = 0; i < x.length; i++) h = (h * 31 + x.charCodeAt(i)) | 0; return String(h); },
     base64EncodeWebSafe: function (s) { return btoa(String(s)).replace(/\+/g, '-').replace(/\//g, '_'); },
     formatDate: function (d) { return d.toISOString().slice(0, 10); } };
+  window.MailApp = { sendEmail: function (o) { mails.push(o); } };
   window.ContentService = { MimeType: { JSON: 'json' }, createTextOutput: function (s) { return { s: s, setMimeType: function () { return this; } }; } };
   window.Session = { getScriptTimeZone: function () { return 'Europe/Paris'; } };
   window.Logger = { log: function () {} };
   var api = new Function(code + '\nreturn { handle_: handle_, doPost: doPost, createAccount_: createAccount_ };')();
   function call(o) { return JSON.parse(api.doPost({ postData: { contents: JSON.stringify(o) } }).s); }
+  var WEEK = '2026-11-09';
 
+  /* Connexion */
   ok(call({ action: 'data' }).code === 'NON_CONNECTE', 'Serveur : aucune donnée sans connexion');
   ok(call({ action: 'login', id: 'x', password: 'y' }).code === 'PAS_DE_COMPTE', 'Serveur : aucun compte → message clair');
   api.createAccount_({ id: 'Nacim', name: 'Nacim', role: 'admin', password: 'motdepasse1' });
-  api.createAccount_({ id: 'marine', name: 'Marine', role: 'client', password: 'secret-marine' });
+  api.createAccount_({ id: 'marine', name: 'Marine', role: 'client', password: 'secret-marine', email: 'marine@exemple.fr' });
   var cpt = sheets['Comptes'];
   ok(cpt && cpt.cell(2, 1) === 'nacim' && !!cpt.cell(2, 7) && cpt.rows.every(function (r) { return r.indexOf('motdepasse1') < 0 && r.indexOf('secret-marine') < 0; }),
     'Serveur : comptes créés, mot de passe jamais stocké en clair');
+  ok(['Profils', 'Foyers', 'Plannings', 'Courses', 'Poids', 'Avis', 'Propositions', 'Prix magasin', 'Photos'].every(function (n) { return !!sheets[n]; }) &&
+    sheets['Ingrédients'].cell(1, 14) === 'Allergènes' && sheets['Stock cuisine'].cell(1, 5) === 'Foyer', 'Serveur : nouveaux onglets et colonnes ajoutés à la fin');
   ok(call({ action: 'login', id: 'nacim', password: 'faux' }).code === 'MDP_FAUX', 'Serveur : mauvais mot de passe refusé');
   var u = call({ action: 'login', id: ' NACIM ', password: 'motdepasse1' });
-  ok(u.ok && u.token && u.me.role === 'admin' && u.token.indexOf('motdepasse1') < 0, 'Serveur : connexion admin (identifiant sans casse) → jeton', u.me);
+  ok(u.ok && u.me.role === 'admin' && u.token.indexOf('motdepasse1') < 0, 'Serveur : connexion admin → jeton', u.me);
   var tk = u.token;
   var d = call({ action: 'data', token: tk });
-  ok(d.ok && d.recipes.length === 1 && d.recipes[0].lines.length === 4 && d.ingredients.length === 4 && d.me.id === 'nacim', 'Serveur : lecture du Sheet une fois connecté', d.ok);
-  ok(d.recipes[0].steps[0].timer === 12 && d.stock[0].qty === 500, 'Serveur : étapes et stock lus');
-  ok(call({ action: 'check', token: tk }).me.role === 'admin' && call({ action: 'check', token: tk + 'x' }).code === 'NON_CONNECTE', 'Serveur : jeton vérifié, jeton modifié refusé');
-  ok(call({ action: 'data', token: tk.replace(/^nacim\|/, 'marine|') }).code === 'NON_CONNECTE', 'Serveur : jeton falsifié (autre compte) refusé');
-  var cu = call({ action: 'login', id: 'marine', password: 'secret-marine' });
+  ok(d.ok && d.recipes.length === 1 && d.recipes[0].lines.length === 4 && d.ingredients.length === 4 && d.me.id === 'nacim', 'Serveur : lecture du Sheet une fois connecté');
+  ok(d.recipes[0].steps[0].timer === 12 && d.stock.length === 1 && d.stock[0].qty === 500, 'Serveur : l’ancien stock (sans foyer) revient à l’admin');
+  ok(call({ action: 'check', token: tk + 'x' }).code === 'NON_CONNECTE' && call({ action: 'data', token: tk.replace(/^nacim\|/, 'marine|') }).code === 'NON_CONNECTE', 'Serveur : jeton modifié ou falsifié refusé');
+  var cu = call({ action: 'login', id: 'marine@exemple.fr', password: 'secret-marine' });
   var ctk = cu.token;
-  ok(cu.ok && cu.me.role === 'client', 'Serveur : connexion client');
-  ok(call({ action: 'addIngredient', token: ctk, ingredient: { name: 'X' } }).code === 'NON_AUTORISE', 'Serveur : écriture refusée à un client');
-  ok(call({ action: 'listAccounts', token: ctk }).code === 'NON_AUTORISE', 'Serveur : liste des comptes refusée à un client');
-  ok(call({ action: 'addIngredient', ingredient: { name: 'X' } }).code === 'NON_CONNECTE', 'Serveur : écriture refusée sans connexion');
+  ok(cu.ok && cu.me.role === 'client' && cu.me.id === 'marine', 'Serveur : connexion avec l’e-mail');
+  ok(call({ action: 'data', token: ctk }).stock.length === 0, 'Serveur : un client ne voit pas le stock de l’admin');
+  ok(call({ action: 'addIngredient', token: ctk, ingredient: { name: 'X' } }).code === 'NON_AUTORISE' && call({ action: 'dashboard', token: ctk }).code === 'NON_AUTORISE', 'Serveur : actions admin refusées à un client');
   for (var i = 0; i < 5; i++) call({ action: 'login', id: 'marine', password: 'nope' });
-  ok(call({ action: 'login', id: 'marine', password: 'secret-marine' }).code === 'BLOQUE', 'Serveur : blocage après 5 essais faux');
-  ok(call({ action: 'login', id: 'nacim', password: 'motdepasse1' }).ok, 'Serveur : le blocage ne touche que ce compte');
+  ok(call({ action: 'login', id: 'marine', password: 'secret-marine' }).code === 'BLOQUE' && call({ action: 'login', id: 'nacim', password: 'motdepasse1' }).ok, 'Serveur : blocage après 5 essais, seulement ce compte');
   cache = {};
+
+  /* Inscription */
+  var acc = { id: 'paul', name: 'Paul', email: 'Paul@Exemple.fr', password: 'paul-12345', consent: true };
+  ok(call({ action: 'signup', account: Object.assign({}, acc, { consent: false }) }).code === 'VALEUR', 'Inscription : confidentialité à accepter');
+  ok(call({ action: 'signup', account: Object.assign({}, acc, { name: 'marine' }) }).code === 'DOUBLON', 'Inscription : prénom déjà pris refusé');
+  ok(call({ action: 'signup', account: Object.assign({}, acc, { email: 'pas-un-mail' }) }).code === 'VALEUR', 'Inscription : e-mail invalide refusé');
+  var su = call({ action: 'signup', account: acc });
+  var ptk = su.token;
+  ok(su.ok && su.me.role === 'client' && su.me.email === 'paul@exemple.fr', 'Inscription : compte client créé et connecté', su.me);
+  ok(call({ action: 'signup', account: Object.assign({}, acc, { id: 'paul2', name: 'Paulo' }) }).code === 'DOUBLON', 'Inscription : e-mail déjà utilisé refusé');
+  ok(call({ action: 'setSignup', token: tk, open: false }).ok && call({ action: 'signup', account: { id: 'zoe', name: 'Zoé', email: 'z@e.fr', password: '12345678', consent: true } }).code === 'INSCRIPTION_FERMEE' &&
+    call({ action: 'signupInfo' }).open === false, 'Inscriptions fermées par l’admin');
+  call({ action: 'setSignup', token: tk, open: true });
+
+  /* Mot de passe oublié */
+  ok(call({ action: 'forgot', email: 'inconnu@exemple.fr' }).sent === true && mails.length === 0, 'Oubli : même réponse pour une adresse inconnue, aucun e-mail');
+  ok(call({ action: 'forgot', email: 'paul@exemple.fr' }).sent === true && mails.length === 1 && mails[0].to === 'paul@exemple.fr', 'Oubli : code envoyé par e-mail');
+  var codeSent = (mails[0].body.match(/(\d{6})/) || [])[1];
+  ok(call({ action: 'resetWithCode', email: 'paul@exemple.fr', code: '000000', password: 'nouveau-paul' }).code === 'CODE_FAUX', 'Oubli : mauvais code refusé');
+  var rs = call({ action: 'resetWithCode', email: 'paul@exemple.fr', code: codeSent, password: 'nouveau-paul' });
+  ok(rs.ok && rs.token && call({ action: 'data', token: ptk }).code === 'NON_CONNECTE', 'Oubli : nouveau mot de passe, ancienne connexion coupée');
+  ptk = rs.token;
+  ok(call({ action: 'resetWithCode', email: 'paul@exemple.fr', code: codeSent, password: 'encore-un-autre' }).code === 'CODE_FAUX', 'Oubli : code utilisable une seule fois');
+
+  /* Profil et poids */
+  var prof = { kcal: 1800, prot: 120, objectif: 'Sèche', repas: 3, marge: 10, sexe: 'F', annee: 1995, taille: 165, seances: 3, metier: 'assis', protGkg: 2, allergies: ['lactose'], exclus: 'Brocoli cuit' };
+  ok(call({ action: 'saveProfile', token: ctk, profile: Object.assign({ name: 'Paul' }, prof) }).ok, 'Profil enregistré');
+  var dm = call({ action: 'data', token: ctk });
+  ok(dm.profile && dm.profile.name === 'Marine' && dm.profile.kcal === 1800 && dm.profile.allergies === 'lactose' && dm.profile.metier === 'assis', 'Profil : chacun ne modifie que le sien (nom forcé)', dm.profile);
+  ok(!('profiles' in dm) && call({ action: 'data', token: tk }).profile === null, 'Profil : personne ne voit les objectifs des autres (pas même l’admin)');
+  ok(call({ action: 'addWeight', token: ctk, date: '2026-11-02', kg: 61.5 }).ok && call({ action: 'addWeight', token: ctk, date: '2026-11-02', kg: 61.2 }).ok &&
+    call({ action: 'data', token: ctk }).weights.length === 1 && call({ action: 'data', token: ctk }).weights[0].kg === 61.2, 'Poids : une valeur par jour, corrigeable');
+  ok(call({ action: 'addWeight', token: ctk, date: '2026-11-02', kg: 9 }).code === 'VALEUR', 'Poids : valeur absurde refusée');
+
+  /* Foyer */
+  var cf = call({ action: 'createFoyer', token: ctk, name: 'Coloc' });
+  ok(cf.ok && /^[A-Z0-9]{6}$/.test(cf.code), 'Foyer créé avec un code', cf.code);
+  ok(call({ action: 'joinFoyer', token: ptk, code: 'ZZZZZZ' }).code === 'INTROUVABLE' && call({ action: 'joinFoyer', token: ptk, code: cf.code.toLowerCase() }).ok, 'Foyer : rejoint par code (majuscules indifférentes)');
+  var dp = call({ action: 'data', token: ptk });
+  ok(dp.foyer && dp.foyer.name === 'Coloc' && dp.foyer.members.length === 2 && !('kcal' in dp.foyer.members[0]), 'Foyer : membres visibles, sans leurs objectifs', dp.foyer);
+  call({ action: 'setStock', token: ctk, items: [{ ing: 'Riz basmati cru', qty: 300 }] });
+  ok(call({ action: 'data', token: ptk }).stock[0].qty === 300 && call({ action: 'data', token: tk }).stock[0].qty === 500, 'Stock commun au foyer, séparé de celui de l’admin');
+
+  /* Planning, liste, cuisine */
+  ok(call({ action: 'savePlan', token: ctk, week: WEEK, rows: [{ recipe: EX, kcal: 600, id: 'm1' }, { recipe: EX, kcal: 600, day: 'lun', slot: 'soir', id: 'm2' }] }).ok, 'Planning enregistré dans le Sheet');
+  ok(call({ action: 'savePlan', token: ctk, week: WEEK, rows: [{ recipe: 'Inconnue' }] }).code === 'INTROUVABLE', 'Planning : recette inconnue refusée');
+  call({ action: 'savePlan', token: ptk, week: WEEK, rows: [{ recipe: EX, id: 'p1' }] });
+  var fw = call({ action: 'foyerWeek', token: ptk, week: WEEK });
+  var mm = fw.meals.filter(function (m) { return m.by === 'marine'; }), pm1 = fw.meals.filter(function (m) { return m.by === 'paul'; })[0];
+  var riz = function (m) { return m.items.filter(function (x) { return x.name === 'Riz basmati cru'; })[0].qty; };
+  ok(fw.meals.length === 3 && mm.length === 2 && mm[1].day === 'lun' && mm[1].slot === 'soir', 'Semaine du foyer : 3 repas, jour et créneau gardés');
+  ok(riz(mm[0]) > 75 && near(riz(pm1), 75) && !JSON.stringify(fw).match(/1800|"prot"/), 'Chaque repas calculé selon les objectifs de son auteur, objectifs non renvoyés', [riz(mm[0]), riz(pm1)]);
+  ok(call({ action: 'saveChecks', token: ptk, week: WEEK, checked: ['Riz basmati cru'] }).ok && call({ action: 'data', token: ctk }).checks[WEEK].checked[0] === 'Riz basmati cru', 'Cases cochées partagées dans le foyer');
+  ok(call({ action: 'finishShopping', token: ctk, week: WEEK, items: [{ ing: 'Riz basmati cru', qty: 1000 }] }).ok, 'Courses terminées');
+  var d3 = call({ action: 'data', token: ptk });
+  ok(d3.stock[0].qty === 1300 && d3.checks[WEEK].checked.length === 0 && !!d3.checks[WEEK].done, 'Courses → stock du foyer +1 000 g, cases remises à zéro');
+  ok(call({ action: 'cooked', token: ptk, week: WEEK, ids: ['m1', 'm2'], used: [{ ing: 'Riz basmati cru', qty: 150 }], leftovers: { recipe: EX, portions: 1, kcal: 600 } }).marked === 2, 'C’est cuisiné : repas du foyer marqués');
+  var fw2 = call({ action: 'foyerWeek', token: ctk, week: WEEK });
+  ok(fw2.meals.filter(function (m) { return m.cooked; }).length === 2 && fw2.meals.filter(function (m) { return m.reste; }).length === 1 &&
+    call({ action: 'data', token: ctk }).stock[0].qty === 1150, 'Stock −150 g, 1 reste ajouté au planning');
+  call({ action: 'savePlan', token: ctk, week: WEEK, rows: [{ recipe: EX, kcal: 600, id: 'm1' }, { recipe: EX, kcal: 600, id: 'm2' }] });
+  ok(call({ action: 'foyerWeek', token: ctk, week: WEEK }).meals.filter(function (m) { return m.cooked; }).length === 2, 'Planning ré-enregistré : « cuisiné » conservé');
+
+  /* Avis */
+  call({ action: 'setAvis', token: ctk, recipe: EX, avis: { fav: true, note: 4, comment: 'Ajouter du citron' } });
+  call({ action: 'setAvis', token: ptk, recipe: EX, avis: { note: 2 } });
+  var av = call({ action: 'data', token: ptk });
+  ok(av.avis[EX].avg === 3 && av.avis[EX].n === 2 && av.avis[EX].comments[0].name === 'Marine' && !av.myAvis[EX].fav, 'Avis : moyenne, commentaire signé du prénom, favoris personnels', av.avis[EX]);
+  ok(call({ action: 'deleteComment', token: ctk, recipe: EX, id: 'marine' }).code === 'NON_AUTORISE' &&
+    call({ action: 'deleteComment', token: tk, recipe: EX, id: 'marine' }).ok && call({ action: 'data', token: tk }).avis[EX].comments.length === 0, 'Commentaire supprimé par l’admin seulement');
+
+  /* Propositions */
+  var pr = call({ action: 'propose', token: ptk, type: 'recette', title: 'Skyr bowl', data: {
+    recipe: { name: 'Skyr bowl', portions: 2, categorie: 'Collation', objectif: 'Sèche', prepa: 5, cuisson: 0, lines: [{ ing: 'Skyr nature', qty: 300 }, { ing: 'Riz basmati cru', qty: 20 }], steps: [{ text: 'Mélanger', timer: null }] },
+    ingredients: [{ name: 'Skyr nature', etat: 'Autre', kcal: 62, p: 11, g: 3.6, l: 0.2, f: 0, prix: null, role: 'protéine', rayon: 'épicerie', allergenes: 'lactose' }] } });
+  ok(pr.ok && pr.n === 1 && call({ action: 'data', token: ptk }).recipes.length === 1, 'Proposition de recette en attente (pas encore au catalogue)');
+  var db = call({ action: 'dashboard', token: tk });
+  ok(db.pending.length === 1 && db.users.total === 3 && db.users.foyers === 1 && db.popular[0].planned >= 3, 'Tableau de bord : à valider, utilisateurs, recettes populaires', db.users);
+  ok(db.quality.noRole.length === 4 && db.quality.noPhoto.length === 1, 'Tableau de bord : qualité des données');
   writes.length = 0;
-  ok(call({ action: 'addIngredient', token: tk, ingredient: { name: 'riz basmati CRU', kcal: 1, p: 1, g: 1, l: 1 } }).code === 'DOUBLON', 'Serveur : doublon détecté (casse/accents)');
-  var ai = call({ action: 'addIngredient', token: tk, ingredient: { name: 'Skyr nature', etat: 'Autre', kcal: 62, p: 11, g: 3.6, l: 0.2, f: 0, prix: null, role: 'protéine', rayon: 'épicerie' } });
-  ok(ai.ok && ai.row === 6, 'Serveur : ingrédient écrit sur la première ligne vide (6)', ai);
-  ok(sheets['Ingrédients'].cell(6, 8) === '' && sheets['Ingrédients'].cell(6, 11) === 'Prix manquant', 'Serveur : prix vide = « Prix manquant », jamais inventé');
-  var ar = call({ action: 'addRecipe', token: tk, recipe: { name: 'Skyr bowl', portions: 2, categorie: 'Collation', objectif: 'Sèche', prepa: 5, cuisson: 0,
-    lines: [{ ing: 'Skyr nature', qty: 300 }, { ing: 'Riz basmati cru', qty: 20 }], steps: [{ text: 'Mélanger', timer: null }] } });
-  ok(ar.ok && ar.row === 3, 'Serveur : recette écrite ligne 3 malgré les formules jusqu’à 201', ar);
-  ok(sheets['Lignes_recette'].cell(6, 2) === 'Skyr nature' && sheets['Lignes_recette'].cell(7, 3) === 20, 'Serveur : lignes de recette écrites en 6 et 7');
-  ok(call({ action: 'addRecipe', token: tk, recipe: { name: 'Bad', portions: 1, lines: [{ ing: 'Inconnu', qty: 1 }] } }).code === 'INTROUVABLE', 'Serveur : ingrédient inexact refusé');
-  ok(call({ action: 'updateLine', token: tk, row: 3, recipe: 'Poulet riz brocoli (exemple)', ing: 'Filet de poulet cru', qty: 160 }).ok && sheets['Lignes_recette'].cell(3, 3) === 160, 'Serveur : quantité modifiée');
-  ok(call({ action: 'updateLine', token: tk, row: 4, recipe: 'Poulet riz brocoli (exemple)', ing: 'Filet de poulet cru', qty: 1 }).code === 'DECALE', 'Serveur : ligne décalée détectée');
-  ok(call({ action: 'setStock', token: tk, items: [{ ing: 'Riz basmati cru', qty: 300 }, { ing: 'Skyr nature', qty: 500 }] }).ok &&
-    sheets['Stock cuisine'].cell(2, 2) === 300 && sheets['Stock cuisine'].cell(3, 1) === 'Skyr nature', 'Serveur : stock mis à jour et ajouté');
-  var su = call({ action: 'setup', token: tk });
-  ok(su.ok && sheets['Ingrédients'].cell(1, 12) === 'Rôle' && sheets['Ingrédients'].cell(2, 12) === 'glucide' && sheets['Ingrédients'].cell(6, 12) === 'protéine', 'Serveur : colonnes Rôle/Rayon ajoutées, défauts proposés, valeur saisie gardée', su.message);
-  ok(!!sheets['Profils'] && call({ action: 'saveProfile', token: tk, profile: { name: 'Léa', kcal: 1800, prot: 110, objectif: 'Sèche', repas: 3, marge: 5 } }).ok, 'Serveur : profil enregistré par l’admin');
-  ok(call({ action: 'saveProfile', token: ctk, profile: { name: 'Léa', kcal: 1700, prot: 120, objectif: 'Sèche', repas: 3, marge: 10 } }).ok, 'Serveur : profil enregistré par un client');
-  var dc = call({ action: 'data', token: ctk }), da = call({ action: 'data', token: tk });
-  ok(dc.profiles.length === 1 && dc.profiles[0].name === 'Marine' && dc.profiles[0].kcal === 1700, 'Serveur : un client ne modifie et ne voit que son propre profil', dc.profiles);
-  ok(da.profiles.length === 2 && da.profiles[0].name === 'Léa' && da.profiles[0].kcal === 1800, 'Serveur : l’admin voit tous les profils, celui de Léa intact');
-  ok(call({ action: 'saveProfile', token: tk, profile: { name: 'X', kcal: 'abc', prot: 100 } }).code === 'VALEUR', 'Serveur : valeur invalide refusée');
-  ok(call({ action: 'createAccount', token: tk, account: { id: 'paul', name: 'Paul', role: 'client', password: 'court' } }).code === 'VALEUR', 'Serveur : mot de passe trop court refusé');
-  ok(call({ action: 'createAccount', token: tk, account: { id: 'paul', name: 'Paul', role: 'client', password: 'paul-12345' } }).ok &&
-    call({ action: 'createAccount', token: tk, account: { id: 'PAUL', name: 'Paul', password: 'paul-12345' } }).code === 'DOUBLON', 'Serveur : compte créé par l’admin, doublon refusé');
-  var ptk = call({ action: 'login', id: 'paul', password: 'paul-12345' }).token;
-  ok(call({ action: 'resetPassword', token: tk, id: 'paul', password: 'nouveau-999' }).ok && call({ action: 'data', token: ptk }).code === 'NON_CONNECTE' &&
-    call({ action: 'login', id: 'paul', password: 'nouveau-999' }).ok, 'Serveur : mot de passe réinitialisé, ancienne connexion coupée');
-  ok(call({ action: 'updateAccount', token: tk, account: { id: 'paul', active: false } }).ok && call({ action: 'login', id: 'paul', password: 'nouveau-999' }).code === 'MDP_FAUX', 'Serveur : compte désactivé ne peut plus se connecter');
-  ok(call({ action: 'updateAccount', token: tk, account: { id: 'nacim', role: 'client' } }).code === 'VALEUR', 'Serveur : l’admin ne peut pas retirer ses propres droits');
-  ok(call({ action: 'changePassword', token: ctk, oldPassword: 'faux', newPassword: 'abcdefgh1' }).code === 'MDP_FAUX', 'Serveur : changement refusé si ancien mot de passe faux');
-  var cp2 = call({ action: 'changePassword', token: ctk, oldPassword: 'secret-marine', newPassword: 'marine-2026' });
-  ok(cp2.ok && call({ action: 'data', token: cp2.token }).ok && call({ action: 'data', token: ctk }).code === 'NON_CONNECTE', 'Serveur : mot de passe changé, nouveau jeton valide, ancien coupé');
-  var la = call({ action: 'listAccounts', token: tk });
-  ok(la.ok && la.accounts.length === 3 && la.accounts.every(function (a) { return !('hash' in a) && !('salt' in a); }), 'Serveur : liste des comptes sans empreinte ni sel');
+  ok(call({ action: 'decide', token: tk, n: 1, accept: true, reply: 'Merci !' }).ok, 'Proposition acceptée');
+  ok(sheets['Ingrédients'].cell(6, 1) === 'Skyr nature' && sheets['Ingrédients'].cell(6, 8) === '' && sheets['Ingrédients'].cell(6, 11) === 'Prix manquant' && sheets['Ingrédients'].cell(6, 14) === 'lactose',
+    'Nouvel ingrédient écrit ligne 6, prix jamais inventé', sheets['Ingrédients'].rows[5]);
+  ok(sheets['Recettes'].cell(3, 1) === 'Skyr bowl' && sheets['Lignes_recette'].cell(6, 2) === 'Skyr nature' && sheets['Lignes_recette'].cell(7, 3) === 20, 'Recette écrite ligne 3, lignes en 6 et 7');
+  ok(call({ action: 'data', token: ptk }).myProposals[0].statut === 'acceptée' && call({ action: 'decide', token: tk, n: 1, accept: true }).code === 'DECALE', 'Statut visible par l’auteur, pas de double validation');
+  call({ action: 'propose', token: ptk, type: 'prix', title: 'Riz Lidl', data: { offer: { ing: 'Riz basmati cru', magasin: 'Lidl', pack: 1000, prix: 2.49 } } });
+  call({ action: 'propose', token: ptk, type: 'photo', title: 'Photo', data: { recipe: EX, image: 'QUJDRA==' } });
+  call({ action: 'decide', token: tk, n: 2, accept: true }); call({ action: 'decide', token: tk, n: 3, accept: true });
+  var d4 = call({ action: 'data', token: ctk });
+  ok(d4.offers.length === 1 && d4.offers[0].pack === 1000 && d4.photos[0] === EX && call({ action: 'photos', token: ctk, names: [EX] }).photos[EX] === 'QUJDRA==', 'Prix magasin et photo validés');
+  ok(sheets['Propositions'].cell(4, 7).indexOf('QUJD') < 0, 'Photo validée : pas gardée en double dans Propositions');
+  ok(call({ action: 'propose', token: tk, type: 'prix', title: 'x', data: { offer: { ing: 'Brocoli cuit', magasin: 'Lidl', pack: 450, prix: 1.99 } } }).applied === true, 'Proposition de l’admin appliquée directement');
+  ok(call({ action: 'addRecipe', token: tk, recipe: { name: 'Bad', portions: 1, lines: [{ ing: 'Inconnu', qty: 1 }] } }).code === 'INTROUVABLE', 'Ingrédient inexact refusé');
+  ok(call({ action: 'updateLine', token: tk, row: 3, recipe: EX, ing: 'Filet de poulet cru', qty: 160 }).ok && sheets['Lignes_recette'].cell(3, 3) === 160 &&
+    call({ action: 'updateLine', token: tk, row: 4, recipe: EX, ing: 'Filet de poulet cru', qty: 1 }).code === 'DECALE', 'Quantité modifiée, ligne décalée détectée');
+  var su2 = call({ action: 'setup', token: tk });
+  ok(su2.ok && sheets['Ingrédients'].cell(2, 12) === 'glucide' && sheets['Ingrédients'].cell(6, 12) === 'protéine', 'Rôle/Rayon proposés, valeur saisie gardée');
+
+  /* Suppression de compte */
+  ok(call({ action: 'deleteMe', token: ptk, password: 'faux' }).code === 'MDP_FAUX', 'Suppression : mot de passe demandé');
+  ok(call({ action: 'deleteMe', token: ptk, password: 'nouveau-paul' }).ok && call({ action: 'login', id: 'paul', password: 'nouveau-paul' }).code === 'MDP_FAUX', 'Suppression : compte supprimé');
+  var fw3 = call({ action: 'foyerWeek', token: ctk, week: WEEK });
+  ok(fw3.members.length === 1 && fw3.meals.every(function (m) { return m.by === 'marine'; }) && call({ action: 'data', token: tk }).avis[EX].n === 1, 'Suppression : planning et avis de Paul effacés, foyer gardé');
+  ok(call({ action: 'deleteMe', token: ctk, password: 'secret-marine' }).ok && call({ action: 'dashboard', token: tk }).users.foyers === 0 &&
+    !sheets['Stock cuisine'].rows.some(function (r) { return r[4] === cf.code; }), 'Dernier membre supprimé : foyer et stock effacés');
+  ok(call({ action: 'deleteMe', token: tk, password: 'motdepasse1' }).code === 'VALEUR', 'Le seul admin ne peut pas supprimer son compte');
+
   var forbidden = writes.filter(function (w) {
     return (w.sheet === 'Recettes' && ((w.c >= 7 && w.c <= 17) || w.c === 20)) || (w.sheet === 'Lignes_recette' && w.c >= 4 && w.c <= 9);
   });
