@@ -424,6 +424,68 @@
     return { prixKg: null, how: 'Prix non trouvé sur la photo' };
   }
 
+  /* ---------- Ticket de caisse (texte lu par OCR) ----------
+     Renvoie le magasin reconnu et une ligne par article avec un prix, rapprochée si possible
+     d'un ingrédient. Rien n'est inventé : sans prix lisible, la ligne est ignorée. */
+  var STORES = ['Lidl', 'Leclerc', 'Carrefour', 'Auchan', 'Intermarché', 'Super U', 'Hyper U', 'Monoprix', 'Franprix',
+    'Aldi', 'Casino', 'Netto', 'Grand Frais', 'Picard', 'Cora', 'Match', 'Biocoop', 'Naturalia', 'Leader Price', 'Spar', 'Action'];
+  var NOT_ITEM = /total|sous.?total|tva|t\.v\.a|carte|cb\b|espece|esp\b|rendu|monnaie|remise|reduc|fidel|avantage|ticket|caisse|merci|siret|tel\b|net a payer|a payer|paiement|montant|solde|points|bon d|article|nb ?art|date|heure/;
+  function parseReceipt(text, ingredients) {
+    var lines = String(text || '').split(/\r?\n/).map(function (l) { return l.replace(/\s+/g, ' ').trim(); }).filter(Boolean);
+    var flat = norm(lines.join(' '));
+    var magasin = '';
+    STORES.some(function (s) { if (flat.indexOf(norm(s)) >= 0) { magasin = s; return true; } return false; });
+    var fake = (ingredients || []).map(function (i) { return { name: i.name }; });
+    var items = [];
+    lines.forEach(function (l, i) {
+      var m = l.match(/(-?\d+[.,]\d{2})\s*(?:€|eur)?\s*(?:[A-Z]\d?|\*)?$/i);
+      var label = m ? l.slice(0, m.index).trim() : '';
+      // Prix seul sur sa ligne : l'article est sur la ligne d'avant.
+      if (m && !/[a-z]{3,}/i.test(label) && i > 0 && !/\d+[.,]\d{2}/.test(lines[i - 1])) label = lines[i - 1];
+      if (!m || !/[a-z]{3,}/i.test(label)) return;
+      var nl = norm(label);
+      if (NOT_ITEM.test(nl)) return;
+      var prix = num(m[1]);
+      if (!(prix > 0) || prix > 200) return;
+      var qtyMult = label.match(/^(\d+)\s*[x×]\s+/i);
+      var w = label.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|gr)\b/i);
+      var pack = w ? Math.round(num(w[1]) * (/kg/i.test(w[2]) ? 1000 : 1)) : null;
+      var clean = label.replace(/^\d+\s*[x×]\s+/i, '').replace(/(\d+(?:[.,]\d+)?)\s*(kg|g|gr)\b/ig, ' ').replace(/\s+/g, ' ').trim();
+      var match = matchRecipe(clean, fake);
+      items.push({ label: clean, prix: qtyMult ? round(prix / Number(qtyMult[1]), 2) : prix, pack: pack, ing: match ? match.name : '' });
+    });
+    return { magasin: magasin, items: items };
+  }
+
+  /* ---------- Code-barres : fiche Open Food Facts → valeurs pour 100 g ----------
+     Seules les valeurs présentes dans la fiche sont reprises (rien n'est deviné). */
+  var OFF_ALLERGENS = { 'en:gluten': 'gluten', 'en:milk': 'lactose', 'en:eggs': 'œuf', 'en:fish': 'poisson',
+    'en:crustaceans': 'crustacés', 'en:molluscs': 'crustacés', 'en:nuts': 'fruits à coque', 'en:peanuts': 'arachide',
+    'en:soybeans': 'soja', 'en:sesame-seeds': 'sésame' };
+  function validEan(code) {
+    var c = String(code || '').replace(/\D/g, '');
+    if (!/^(\d{8}|\d{12}|\d{13}|\d{14})$/.test(c)) return false;
+    var digits = c.split('').map(Number), check = digits.pop(), sum = 0;
+    digits.reverse().forEach(function (d, i) { sum += d * (i % 2 === 0 ? 3 : 1); });
+    return (10 - sum % 10) % 10 === check;
+  }
+  function parseOFF(json) {
+    var p = json && json.product;
+    if (!json || json.status !== 1 || !p) return null;
+    var n = p.nutriments || {};
+    var val = function (k) { var v = num(n[k]); return v === null ? null : round(v, 1); };
+    var kcal = num(n['energy-kcal_100g']);
+    if (kcal === null && num(n['energy-kj_100g']) !== null) kcal = num(n['energy-kj_100g']) / 4.184;
+    if (kcal === null && num(n.energy_100g) !== null) kcal = num(n.energy_100g) / 4.184;
+    var tags = {};
+    (p.allergens_tags || []).forEach(function (t) { if (OFF_ALLERGENS[t]) tags[OFF_ALLERGENS[t]] = 1; });
+    var name = [p.product_name_fr || p.product_name, p.brands ? String(p.brands).split(',')[0].trim() : ''].filter(Boolean).join(' – ');
+    var res = { name: name, kcal: kcal === null ? null : Math.round(kcal), p: val('proteins_100g'), g: val('carbohydrates_100g'),
+      l: val('fat_100g'), f: val('fiber_100g'), allergenes: Object.keys(tags), quantity: p.quantity || '', found: [] };
+    ['kcal', 'p', 'g', 'l', 'f'].forEach(function (k) { if (res[k] !== null) res.found.push(k); });
+    return res;
+  }
+
   /* ---------- Remplacer un ingrédient précis (kcal et protéines conservées) ---------- */
   function replaceWith(recipe, idx, opts, fromName, toName) {
     var Kt = num(opts.kcal) || recipeTotals(recipe, idx).portion.kcal;
@@ -633,7 +695,7 @@
     activityFactor: activityFactor, targets: targets, macroSplit: macroSplit, weightTrend: weightTrend,
     mondayOf: mondayOf, isoDay: isoDay, parseDay: parseDay,
     bestOffer: bestOffer, priceLine: priceLine, mealItems: mealItems, needsFromMeals: needsFromMeals, foyerList: foyerList,
-    splitList: splitList, excludedBy: excludedBy, autoPlan: autoPlan };
+    splitList: splitList, excludedBy: excludedBy, autoPlan: autoPlan, parseReceipt: parseReceipt, STORES: STORES, parseOFF: parseOFF, validEan: validEan };
   root.Calc = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

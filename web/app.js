@@ -2,7 +2,7 @@
    Les écrans sont dans screens-*.js (ils s'enregistrent avec App.route). */
 (function () {
   'use strict';
-  var VERSION = '2.0.1';
+  var VERSION = '2.3.0';
   var C = window.Calc, Store = window.Store, Api = window.Api, Sync = Api.Sync;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
@@ -105,8 +105,13 @@
   async function loadData() {
     var d = await Api.call('data', { token: S.token });
     delete d.ok;
-    if (d.me) { setSession(S.token, d.me); delete d.me; }
+    // Le serveur renouvelle la connexion de temps en temps : on garde le nouveau jeton.
+    if (d.token || d.me) { setSession(d.token || S.token, d.me || S.me); delete d.me; delete d.token; }
     setData(reapplyPending(d));
+  }
+  // Demande au téléphone de ne pas effacer les données de l'appli (connexion, copie hors ligne).
+  function keepStorage() {
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {}); } catch (e) {}
   }
   async function refresh(silent) {
     if (S.loading || !S.token) { render(); return; }
@@ -131,7 +136,20 @@
       if (err.code === 'NON_CONNECTE') { logout('Connexion expirée : reconnecte-toi.'); return; }
       showError(Object.assign(err, { message: 'Modification non enregistrée (' + (item && item.action) + ') : ' + err.message }));
     }
+    // Mise à jour automatique : dès que toutes les modifications sont envoyées, on relit les données
+    // (pour voir aussi celles du foyer et de l'admin).
+    var n = Sync.queue().length;
+    if (n) S.hadPending = true;
+    else if (S.hadPending && !Sync.busy && S.token) {
+      S.hadPending = false;
+      clearTimeout(S.autoT); S.autoT = setTimeout(function () { refresh(true); }, 1200);
+    }
     status();
+  });
+  // Relecture automatique quand on revient sur l'appli (plus d'une minute après la dernière lecture).
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible' || !S.token || !S.data) return;
+    if (Date.now() - new Date(S.data.fetchedAt).getTime() > 60000) refresh(true);
   });
 
   /* ---------- Profil, cibles ---------- */
@@ -419,6 +437,7 @@
   /* ================= Connexion, inscription, mot de passe oublié ================= */
   async function afterLogin(r, msg) {
     setSession(r.token, r.me);
+    keepStorage();
     Store.set('adminView', true);
     await loadData();
     toast(msg || ('Bonjour ' + r.me.name));
@@ -436,7 +455,7 @@
       '<hr><p>Pas encore de compte ?</p><a class="btn big" href="#/inscription">Créer mon compte</a>' +
       '<hr><button class="btn ghost big" id="l-demo">' + (demo() ? 'Quitter le mode démo' : 'Essayer avec des données de démo') + '</button>' +
       '<a class="btn ghost big" href="#/connexion">Paramètres de connexion</a>' +
-      '<p class="muted small center"><a href="confidentialite.html">Confidentialité</a> · v' + VERSION + '</p></section>',
+      '<footer class="legal"><a href="confidentialite.html">Confidentialité et données personnelles</a><span>v' + VERSION + '</span></footer></section>',
       bind: function () {
         $('#l-form').onsubmit = function (e) {
           e.preventDefault();
@@ -532,6 +551,7 @@
     return { tab: 'plus', html: '<section class="screen"><h1>Plus</h1>' +
       '<p class="muted">Connecté : <b>' + esc(S.me.name) + '</b> (' + esc(S.me.id) + (adm ? ', admin' : '') + ')' +
       (S.data.foyer ? ' · foyer « ' + esc(S.data.foyer.name) + ' »' : '') + '</p>' +
+      '<div class="stack">' + item('#/compte', 'Mon compte') + '</div>' +
       (adm ? '<div class="panel"><div class="panel-title">Affichage</div><div class="row wrap">' +
         '<button class="btn ' + (isAdmin() ? 'primary' : '') + '" data-view="admin">Vue admin</button>' +
         '<button class="btn ' + (!isAdmin() ? 'primary' : '') + '" data-view="client">Vue client</button></div>' +
@@ -542,17 +562,12 @@
       '<div class="stack">' +
       item('#/profil', 'Mes objectifs') + item('#/poids', 'Mon poids') + item('#/foyer', 'Mon foyer') +
       item('#/stock', 'Stock cuisine') + item('#/session', 'Session de cuisine (batch)') +
-      item('#/proposer', isAdmin() ? 'Nouvelle recette' : 'Proposer une recette') +
-      item('#/proposer-prix', isAdmin() ? 'Ajouter un prix en magasin' : 'Proposer un prix') +
-      item('#/mes-propositions', 'Mes propositions') +
-      item('#/compte', 'Mon compte') +
-      '<button class="btn big" id="x-refresh">Actualiser les données</button>' +
       '<a class="btn big" href="guide.html">Mode d’emploi</a>' +
-      '<a class="btn ghost big" href="confidentialite.html">Confidentialité</a>' +
       (adm ? '<a class="btn ghost big" href="#/connexion">Paramètres de connexion</a>' : '') +
       (S.lastError ? '<button class="btn ghost big" id="x-report">Copier le dernier rapport d’erreur</button>' : '') +
       '<button class="btn ghost big" id="x-logout">Se déconnecter</button>' +
-      '</div><p class="muted small center">Données du ' + dateFr(S.data.fetchedAt) + ' · v' + VERSION + '</p></section>',
+      '</div><footer class="legal"><a href="confidentialite.html">Confidentialité et données personnelles</a>' +
+      '<span>Données du ' + dateFr(S.data.fetchedAt) + ' · v' + VERSION + '</span></footer></section>',
       bind: function (el) {
         $$('[data-view]', el).forEach(function (b) {
           b.onclick = function () { Store.set('adminView', b.getAttribute('data-view') === 'admin'); render(); toast(isAdmin() ? 'Vue admin' : 'Vue client'); };
@@ -561,7 +576,6 @@
           if (Sync.queue().length && !confirm(Sync.queue().length + ' modification(s) pas encore envoyée(s) seront perdues. Se déconnecter quand même ?')) return;
           logout('Déconnecté');
         };
-        $('#x-refresh', el).onclick = function () { refresh(); };
         var xr = $('#x-report', el); if (xr) xr.onclick = function () { copyText(report(S.lastError)).then(function () { toast('Rapport copié'); }); };
       } };
   });
@@ -671,7 +685,7 @@
     if (!S.token) setData(null);
     else if (S.data && !('plan' in S.data)) setData(null); // copie d'une ancienne version : on relit
     render();
-    if (S.token) { Sync.flush(); refresh(true); }
+    if (S.token) { keepStorage(); Sync.flush(); refresh(true); }
     if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(function () {});
   }
 

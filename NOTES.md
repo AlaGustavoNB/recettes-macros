@@ -20,7 +20,9 @@ Téléphone (appli, hors ligne + file d'attente)  ──HTTPS──▶  Apps Scr
 | Hors ligne | Copie des données dans `localStorage` + **file d'attente** (`Api.Sync`) : planning, cases cochées, stock, poids, avis, « cuisiné » sont envoyés au retour du réseau | 0 € |
 | Mode démo fidèle | `web/demo-server.js` = le vrai serveur exécuté dans le navigateur sur un faux Sheet (`demo.js`) | 0 € |
 | Photos de recettes | Réduites dans le téléphone (≤ 640 px, ≤ 44 000 caractères base64), stockées dans l'onglet **Photos**, chargées à la demande | 0 € |
-| Lecture d'étiquette | OCR de Google Drive (service avancé Drive API) ; fichier temporaire supprimé aussitôt ; 30 photos/jour max par utilisateur | 0 € |
+| Code-barres | Photo → lecteur intégré du téléphone (Android) ou bibliothèque gratuite ZXing chargée à la demande (iPhone) → fiche Open Food Facts (API publique gratuite, sans clé) ; valeurs surlignées et modifiables | 0 € |
+| Prix pendant les courses | Bouton € par article (saisie ou photo d’étiquette) et ticket de caisse (photo, image ou PDF → OCR → `parseReceipt`) ; propositions de prix validées par l’admin | 0 € |
+| Lecture d’étiquette | OCR de Google Drive (service avancé Drive API) ; fichier temporaire supprimé aussitôt ; 30 photos/jour max par utilisateur | 0 € |
 | Sauvegarde | Déclencheur Apps Script chaque dimanche : copie du Sheet dans Drive, 8 gardées | 0 € |
 | Notifications | Pastilles dans l'appli seulement (pas de push : il faudrait un service externe) | 0 € |
 
@@ -49,7 +51,7 @@ web/                   publié sur GitHub Pages (branche gh-pages)
   demo-data.js, demo.js, demo-server.js   mode démo
   guide.html, confidentialite.html
 tests/
-  tests.html           121 tests : calculs + serveur simulé (comptes, inscription, oubli, foyer,
+  tests.html           135 tests : calculs + serveur simulé (comptes, inscription, oubli, foyer,
                        planning, cuisine, avis, propositions, suppression, colonnes calculées intactes)
   audit.js             contrôle d'affichage mobile
 ```

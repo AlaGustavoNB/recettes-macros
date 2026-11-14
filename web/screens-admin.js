@@ -24,9 +24,14 @@
     var html = '<section class="screen"><a class="back" href="' + back + '">‹ Retour</a>' +
       '<h1>' + (editing ? 'Modifier un ingrédient' : (admin ? 'Nouvel ingrédient' : 'Proposer un ingrédient')) + '</h1>' +
       (!admin ? '<p class="muted">' + (forRecipe ? 'Il sera ajouté à ta proposition de recette.' : 'L’admin le vérifiera avant de l’ajouter.') + '</p>' : '') +
-      (editing ? '' : '<div class="panel"><div class="panel-title">Photo du tableau nutritionnel</div>' +
+      '<div class="panel"><div class="panel-title">Code-barres du produit</div>' +
+      '<p class="muted small">Les valeurs pour 100 g viennent d’Open Food Facts (base gratuite et collaborative) : elles s’affichent surlignées, corrige-les si besoin.</p>' +
+      '<label class="btn primary big file"><input type="file" accept="image/*" capture="environment" id="f-barcode">▥ Scanner le code-barres</label>' +
+      '<div class="row"><input id="f-ean" inputmode="numeric" autocomplete="off" placeholder="ou tape les chiffres sous le code" aria-label="Numéro du code-barres">' +
+      '<button class="btn" id="f-ean-go">Chercher</button></div><div id="ean-out"></div></div>' +
+      (editing ? '' : '<div class="panel"><div class="panel-title">Ou photo du tableau nutritionnel</div>' +
         '<p class="muted small">La photo est lue par Google (gratuit) puis supprimée. Rien n’est enregistré sans ta validation.</p>' +
-        '<label class="btn primary big file"><input type="file" accept="image/*" capture="environment" id="f-photo">📷 Prendre la photo</label>' +
+        '<label class="btn big file"><input type="file" accept="image/*" capture="environment" id="f-photo">📷 Prendre la photo</label>' +
         '<div id="ocr-out"></div></div>') +
       '<div id="dup"></div>' +
       A.field('Nom (avec cru/cuit)', '<input id="f-name" value="' + esc(v.name || '') + '"' + (editing ? ' readonly' : '') + ' autocomplete="off">',
@@ -66,6 +71,44 @@
       });
       var photo = $('#f-photo', el); if (photo) photo.onchange = function () { ocrFlow(photo.files[0], 'nutrition'); photo.value = ''; };
       var pp = $('#f-pricephoto', el); pp.onchange = function () { ocrFlow(pp.files[0], 'prix'); pp.value = ''; };
+      // Code-barres : photo → lecture du code → fiche Open Food Facts → champs pré-remplis (modifiables).
+      var eanOut = $('#ean-out', el);
+      var lookup = function (code) {
+        code = String(code || '').replace(/\D/g, '');
+        if (!C.validEan(code)) { eanOut.innerHTML = '<div class="notice warn">Code-barres non valide (' + esc(code || 'vide') + '). Vérifie les chiffres.</div>'; return; }
+        $('#f-ean').value = code;
+        if (!navigator.onLine) { eanOut.innerHTML = '<div class="notice warn">Pas de réseau : la recherche du code-barres attendra. Tu peux saisir les valeurs à la main.</div>'; return; }
+        eanOut.innerHTML = '<p class="muted">Recherche du produit ' + esc(code) + '…</p>';
+        A.act('recherche d’un code-barres', async function () {
+          var res = await fetch('https://world.openfoodfacts.org/api/v2/product/' + code + '.json?fields=product_name,product_name_fr,brands,nutriments,quantity,allergens_tags');
+          var info = C.parseOFF(res.ok ? await res.json() : null);
+          if (!info) { eanOut.innerHTML = '<div class="notice warn">Produit ' + esc(code) + ' inconnu d’Open Food Facts. Prends en photo le tableau nutritionnel ou saisis les valeurs.</div>'; return; }
+          var setv = function (id, val) { if (val !== null && val !== undefined && val !== '') { $(id).value = typeof val === 'number' ? String(val).replace('.', ',') : val; $(id).classList.add('read'); } };
+          if (!editing && !$('#f-name').value && info.name) setv('#f-name', info.name);
+          setv('#f-kcal', info.kcal); setv('#f-p', info.p); setv('#f-g', info.g); setv('#f-l', info.l); setv('#f-f', info.f);
+          $('#f-src').value = 'Open Food Facts (code ' + code + ')';
+          info.allergenes.forEach(function (a) { var cb = $('[data-alg="' + a + '"]', el); if (cb) cb.checked = true; });
+          if (!v.role) { var rr = C.suggestRole(read()); $('#f-role').value = rr; $('#f-rayon').value = C.suggestRayon(rr); }
+          var miss = ['kcal', 'p', 'g', 'l', 'f'].filter(function (k) { return info[k] === null; })
+            .map(function (k) { return { kcal: 'kcal', p: 'protéines', g: 'glucides', l: 'lipides', f: 'fibres' }[k]; });
+          eanOut.innerHTML = '<div class="notice">Trouvé : <b>' + esc(info.name || code) + '</b>' + (info.quantity ? ' (' + esc(info.quantity) + ')' : '') +
+            '. Valeurs pour 100 g surlignées : <b>vérifie et corrige si besoin</b>.' + (editing ? '' : ' Ajoute « cru » ou « cuit » au nom si utile.') +
+            (miss.length ? '<br><span class="warn-text">Absent de la fiche : ' + miss.join(', ') + '. À saisir.</span>' : '') +
+            (info.allergenes.length ? '<br>Allergènes cochés : ' + esc(info.allergenes.join(', ')) + '.' : '') + '</div>';
+          checkDup(); if (!editing) Store.set('ingDraft', read());
+        });
+      };
+      $('#f-ean-go', el).onclick = function () { lookup($('#f-ean').value); };
+      $('#f-ean', el).onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); lookup($('#f-ean').value); } };
+      $('#f-barcode', el).onchange = function (e) {
+        var f = e.target.files[0]; e.target.value = ''; if (!f) return;
+        eanOut.innerHTML = '<p class="muted">Lecture du code-barres…</p>';
+        A.act('lecture d’un code-barres', async function () {
+          var code = await readBarcode(f);
+          if (!code) { eanOut.innerHTML = '<div class="notice warn">Code-barres illisible. Reprends la photo bien à plat et nette (code entier, sans reflet), ou tape les chiffres.</div>'; return; }
+          lookup(code);
+        });
+      };
       $('#f-save').onclick = function () {
         var ing = read();
         if (!ing.name) { A.toast('Le nom est obligatoire.'); return; }
@@ -84,7 +127,7 @@
           else await A.Api.call('propose', { token: S.token, type: 'ingrédient', title: ing.name, data: { ingredient: ing } });
           Store.del('ingDraft');
           if (admin) { await A.refreshStrict(); A.toast('Enregistré dans le Sheet'); A.go(editing ? '#/ingredients' : (forRecipe ? '#/proposer' : '#/gestion')); }
-          else { await A.refreshStrict(); A.toast('Envoyé à l’admin'); A.go('#/mes-propositions'); }
+          else { await A.refreshStrict(); A.toast('Ingrédient envoyé à l’admin. Merci !'); A.go('#/recettes'); }
         });
       };
       function ocrFlow(file, kind) {
@@ -118,13 +161,47 @@
     } };
   });
 
+  /* ---------- Lecture d'un code-barres sur une photo ----------
+     Lecteur intégré du téléphone s'il existe (Android), sinon bibliothèque gratuite ZXing chargée à la demande. */
+  var ZXING_URL = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+  function loadZxing() {
+    if (window.ZXing) return Promise.resolve(window.ZXing);
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script'); s.src = ZXING_URL; s.async = true;
+      s.onload = function () { resolve(window.ZXing); };
+      s.onerror = function () { reject(A.Api.ApiError('Lecteur de code-barres indisponible (pas de réseau ?). Tape les chiffres.', 'RESEAU')); };
+      document.head.appendChild(s);
+    });
+  }
+  async function readBarcode(file) {
+    var url = URL.createObjectURL(file);
+    try {
+      if ('BarcodeDetector' in window) {
+        try {
+          var det = new window.BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e'] });
+          var bmp = await createImageBitmap(file);
+          var found = await det.detect(bmp);
+          if (found && found.length) return found[0].rawValue;
+        } catch (e) { /* on essaie ZXing */ }
+      }
+      var Z = await loadZxing();
+      var hints = new Map();
+      hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.UPC_E]);
+      hints.set(Z.DecodeHintType.TRY_HARDER, true);
+      var reader = new Z.BrowserMultiFormatReader(hints);
+      try { var r = await reader.decodeFromImageUrl(url); return r && r.getText(); }
+      catch (e) { return null; }
+    } finally { URL.revokeObjectURL(url); }
+  }
+  A.readBarcode = readBarcode;
+
   /* ================= Recette : nouvelle (admin) ou proposée (autres) ================= */
   A.route(/^#\/proposer$/, function () {
     var admin = A.isAdmin();
     var d = Store.get(A.pk('recDraft'), null) || { name: '', portions: 1, categorie: '', objectif: 'Maintien', prepa: '', cuisson: '', notes: '', lines: [{ ing: '', qty: '' }], steps: [{ text: '', timer: '' }] };
     var extra = admin ? [] : propIngs();
     var names = S.data.ingredients.map(function (i) { return i.name; }).concat(extra.map(function (i) { return i.name; }));
-    var html = '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><h1>' + (admin ? 'Nouvelle recette' : 'Proposer une recette') + '</h1>' +
+    var html = '<section class="screen"><a class="back" href="#/recettes">‹ Recettes</a><h1>' + (admin ? 'Nouvelle recette' : 'Proposer une recette') + '</h1>' +
       (admin ? '' : '<p class="muted">L’admin la vérifie avant de l’ajouter au catalogue. Tu suis son état dans « Mes propositions ».</p>') +
       A.field('Nom de la recette', '<input id="n-name" value="' + esc(d.name) + '">') +
       '<div class="grid2">' + A.field('Portions', '<input id="n-portions" type="number" inputmode="numeric" value="' + esc(d.portions) + '">') +
@@ -185,7 +262,7 @@
           Store.del(A.pk('recDraft')); Store.del(A.pk('propIngs'));
           await A.refreshStrict();
           if (res.applied) { A.toast('Recette enregistrée'); A.go('#/recette/' + enc(r.name)); }
-          else { A.toast('Recette envoyée à l’admin. Merci !'); A.go('#/mes-propositions'); }
+          else { A.toast('Recette envoyée à l’admin. Merci !'); A.go('#/recettes'); }
         });
       };
     } };

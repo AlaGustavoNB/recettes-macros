@@ -149,6 +149,26 @@ ok(cand.length >= 1 && cand.every(function (x) { return C.roleOf(C.find(idx, x.b
 var ap = C.autoPlan(D.recipes, { meals: 10, avis: { 'Tacos bœuf (démo)': { fav: true } }, exclude: function (r) { return r.name === 'Cabillaud patate douce (démo)'; }, seed: 3 });
 ok(ap.reduce(function (s, x) { return s + x.meals; }, 0) === 10 && ap.every(function (x) { return x.recipe !== 'Cabillaud patate douce (démo)'; }), 'Semaine proposée : 10 repas, recette exclue absente', ap);
 
+/* 16. Ticket de caisse */
+var tk0 = C.parseReceipt('LIDL\n12 rue de la Gare\nRIZ BASMATI 1KG 2,49 A\nFILET POULET 500G 5,79 A\n2 x BROCOLI 1KG 3,58 A\nTOMATES 1KG\n1,99 A\nSOUS-TOTAL 13,85\nTOTAL 13,85\nCB 13,85', D.ingredients);
+var tki = {}; tk0.items.forEach(function (x) { tki[x.ing || x.label] = x; });
+ok(tk0.magasin === 'Lidl' && tk0.items.length === 4, 'Ticket : magasin reconnu, 4 articles, totaux et paiement ignorés', tk0);
+ok(tki['Riz basmati cru'] && tki['Riz basmati cru'].prix === 2.49 && tki['Riz basmati cru'].pack === 1000, 'Ticket : riz 1 kg à 2,49 € rapproché de « Riz basmati cru »', tki['Riz basmati cru']);
+ok(tki['Filet de poulet cru'] && tki['Filet de poulet cru'].pack === 500, 'Ticket : poulet 500 g reconnu');
+var broc = tk0.items.filter(function (x) { return /BROCOLI/.test(x.label); })[0];
+ok(broc && broc.prix === 1.79, 'Ticket : « 2 x » → prix unitaire 1,79 €', broc);
+ok(tk0.items.some(function (x) { return /TOMATES/.test(x.label) && x.prix === 1.99; }), 'Ticket : prix sur la ligne suivante rattaché à l’article');
+ok(C.parseReceipt('TOTAL 12,00\nCB 12,00', D.ingredients).items.length === 0, 'Ticket : aucun prix inventé');
+
+/* 17. Code-barres (Open Food Facts) */
+ok(C.validEan('3017620422003') && !C.validEan('3017620422004') && !C.validEan('12345'), 'Code-barres : chiffre de contrôle vérifié');
+var off = C.parseOFF({ status: 1, product: { product_name: 'Skyr nature', brands: 'Siggi’s, Autre', quantity: '450 g',
+  nutriments: { 'energy-kj_100g': 263, proteins_100g: 11, carbohydrates_100g: 3.6, fat_100g: 0.2 }, allergens_tags: ['en:milk', 'en:unknown'] } });
+ok(off && off.kcal === 63 && off.p === 11 && off.g === 3.6 && off.l === 0.2 && off.f === null && off.name === 'Skyr nature – Siggi’s',
+  'Code-barres : valeurs pour 100 g reprises, kcal depuis les kJ, fibres absentes non inventées', off);
+ok(off.allergenes.join() === 'lactose', 'Code-barres : allergènes traduits (lait → lactose)');
+ok(C.parseOFF({ status: 0 }) === null, 'Code-barres : produit inconnu → rien de pré-rempli');
+
 /* ===== Serveur Apps Script simulé ===== */
 function runServerTests(code) {
   var writes = [], mails = [];
@@ -280,6 +300,19 @@ function runServerTests(code) {
   call({ action: 'setStock', token: ctk, items: [{ ing: 'Riz basmati cru', qty: 300 }] });
   ok(call({ action: 'data', token: ptk }).stock[0].qty === 300 && call({ action: 'data', token: tk }).stock[0].qty === 500, 'Stock commun au foyer, séparé de celui de l’admin');
 
+  sheets['Stock cuisine'].rows.push(['Riz basmati cru', 50, '', '', cf.code]); // doublon (ex. saisi à la main)
+  call({ action: 'setStock', token: ptk, items: [{ ing: 'Riz basmati cru', qty: 320 }] });
+  var rizRows = sheets['Stock cuisine'].rows.filter(function (r) { return r[0] === 'Riz basmati cru' && r[4] === cf.code; });
+  ok(rizRows.length === 1 && rizRows[0][1] === 320, 'Stock : une seule ligne par ingrédient (doublon fusionné)', rizRows);
+  call({ action: 'setStock', token: ptk, items: [{ ing: 'Riz basmati cru', qty: 300 }] });
+  ok(!call({ action: 'data', token: ptk }).token, 'Connexion récente : pas de nouveau jeton');
+  var realNow = Date.now; Date.now = function () { return realNow() + 30 * 864e5; };
+  var renewed = call({ action: 'data', token: ptk });
+  Date.now = function () { return realNow() + 380 * 864e5; };
+  var later = call({ action: 'data', token: renewed.token }), old = call({ action: 'data', token: ptk });
+  Date.now = realNow;
+  ok(renewed.token && renewed.token !== ptk && later.ok && old.code === 'NON_CONNECTE', 'Connexion renouvelée à l’usage : toujours connecté au-delà d’un an (l’ancien jeton, lui, expire)', [later.code, old.code]);
+
   /* Planning, liste, cuisine */
   ok(call({ action: 'savePlan', token: ctk, week: WEEK, rows: [{ recipe: EX, kcal: 600, id: 'm1' }, { recipe: EX, kcal: 600, day: 'lun', slot: 'soir', id: 'm2' }] }).ok, 'Planning enregistré dans le Sheet');
   ok(call({ action: 'savePlan', token: ctk, week: WEEK, rows: [{ recipe: 'Inconnue' }] }).code === 'INTROUVABLE', 'Planning : recette inconnue refusée');
@@ -329,6 +362,8 @@ function runServerTests(code) {
   ok(d4.offers.length === 1 && d4.offers[0].pack === 1000 && d4.photos[0] === EX && call({ action: 'photos', token: ctk, names: [EX] }).photos[EX] === 'QUJDRA==', 'Prix magasin et photo validés');
   ok(sheets['Propositions'].cell(4, 7).indexOf('QUJD') < 0, 'Photo validée : pas gardée en double dans Propositions');
   ok(call({ action: 'propose', token: tk, type: 'prix', title: 'x', data: { offer: { ing: 'Brocoli cuit', magasin: 'Lidl', pack: 450, prix: 1.99 } } }).applied === true, 'Proposition de l’admin appliquée directement');
+  ok(call({ action: 'propose', token: tk, type: 'prix', title: 'Ticket', data: { offers: [{ ing: 'Riz basmati cru', magasin: 'Leclerc', pack: 500, prix: 1.6 }, { ing: "Huile d'olive", magasin: 'Leclerc', pack: 1000, prix: 7.9 }] } }).applied &&
+    call({ action: 'data', token: tk }).offers.length === 4, 'Ticket de caisse : plusieurs prix en une proposition');
   ok(call({ action: 'addRecipe', token: tk, recipe: { name: 'Bad', portions: 1, lines: [{ ing: 'Inconnu', qty: 1 }] } }).code === 'INTROUVABLE', 'Ingrédient inexact refusé');
   ok(call({ action: 'updateLine', token: tk, row: 3, recipe: EX, ing: 'Filet de poulet cru', qty: 160 }).ok && sheets['Lignes_recette'].cell(3, 3) === 160 &&
     call({ action: 'updateLine', token: tk, row: 4, recipe: EX, ing: 'Filet de poulet cru', qty: 1 }).code === 'DECALE', 'Quantité modifiée, ligne décalée détectée');

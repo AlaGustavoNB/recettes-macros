@@ -36,7 +36,7 @@ var HEADS = {
 };
 var EXTRA_COLS = { 'Ingrédients': { 14: 'Allergènes' }, 'Stock cuisine': { 5: 'Foyer' } };
 
-var TOKEN_DAYS = 60;
+var TOKEN_DAYS = 365; // connexion gardée un an, renouvelée à chaque utilisation
 var MAX_FAILS = 5;
 var LOCK_SECONDS = 15 * 60;
 var HASH_ROUNDS = 300;
@@ -124,7 +124,11 @@ function handle_(req) {
     else {
       me = auth_(req.token);
       var USER = {
-        data: function () { var d = getData_(me); d.me = publicMe_(me); return d; },
+        data: function () {
+          var d = getData_(me); d.me = publicMe_(me);
+          var fresh = renewToken_(req.token, me); if (fresh) d.token = fresh; // rester connecté tant qu'on utilise l'appli
+          return d;
+        },
         check: function () { return { me: publicMe_(me) }; },
         changePassword: function () { return withLock_(function () { return changePassword_(me, req.oldPassword, req.newPassword); }); },
         setEmail: function () { return withLock_(function () { return setEmail_(me, req.email); }); },
@@ -468,6 +472,12 @@ function setEmail_(me, email) {
   return { email: e };
 }
 
+// Jeton renouvelé automatiquement s'il a plus d'une semaine : on reste connecté tant qu'on ouvre l'appli
+// au moins une fois par an. « Se déconnecter » ou un changement de mot de passe y mettent fin.
+function renewToken_(token, acc) {
+  var exp = Number(String(token || '').split('|')[1]) || 0;
+  return exp - Date.now() < (TOKEN_DAYS - 7) * 86400000 ? makeToken_(acc) : null;
+}
 function makeToken_(acc) {
   var exp = Date.now() + TOKEN_DAYS * 86400000;
   var payload = acc.id + '|' + exp + '|' + acc.salt.slice(0, 8);
@@ -795,10 +805,17 @@ function saveChecks_(me, week, checked) {
   return {};
 }
 
+// Une seule ligne de stock par ingrédient et par foyer : les doublons éventuels sont additionnés puis effacés.
+function stockLine_(key, ing) {
+  var rows = stockRows_(key).filter(function (r) { return s_(r[0]) === ing; });
+  if (!rows.length) return null;
+  var total = rows.reduce(function (t, r) { return t + (n_(r[1]) || 0); }, 0);
+  rows.slice(1).forEach(function (r) { clearRow_(TABS.STO, r.row, 5); });
+  return { row: rows[0].row, qty: total, remarque: s_(rows[0][3]) };
+}
 function addStock_(key, ing, delta) {
-  var row = stockRows_(key).filter(function (r) { return s_(r[0]) === ing; })[0];
-  var s = sheet_(TABS.STO);
-  if (row) s.getRange(row.row, 2, 1, 4).setValues([[Math.max(0, (n_(row[1]) || 0) + delta), today_(), s_(row[3]), key]]);
+  var line = stockLine_(key, ing);
+  if (line) sheet_(TABS.STO).getRange(line.row, 2, 1, 4).setValues([[Math.max(0, line.qty + delta), today_(), line.remarque, key]]);
   else if (delta > 0) appendRow_(TABS.STO, [ing, delta, today_(), '', key]);
 }
 
@@ -845,9 +862,9 @@ function setStock_(me, items) {
   var key = key_(me);
   (items || []).forEach(function (it) {
     var q = checkNumber_(it.qty, 'Quantité en stock', 0, 1000000);
-    var row = stockRows_(key).filter(function (r) { return s_(r[0]) === it.ing; })[0];
-    if (row) sheet_(TABS.STO).getRange(row.row, 2, 1, 4).setValues([[q === '' ? 0 : q, today_(), s_(row[3]), key]]);
-    else appendRow_(TABS.STO, [it.ing, q === '' ? 0 : q, today_(), '', key]);
+    var line = stockLine_(key, it.ing);
+    if (line) sheet_(TABS.STO).getRange(line.row, 2, 1, 4).setValues([[q === '' ? 0 : q, today_(), line.remarque, key]]);
+    else if (q) appendRow_(TABS.STO, [it.ing, q, today_(), '', key]);
   });
   return { count: (items || []).length };
 }
@@ -915,7 +932,7 @@ function applyProposal_(type, d, by) {
     return addRecipe_(d.recipe);
   }
   if (type === 'ingrédient') return addIngredient_(d.ingredient);
-  if (type === 'prix') return upsertOffer_(d.offer, by);
+  if (type === 'prix') { (d.offers || [d.offer]).forEach(function (o) { upsertOffer_(o, by); }); return {}; }
   if (type === 'photo') return setPhoto_(d.recipe, d.image, by);
   throw err_('VALEUR', 'Type inconnu.');
 }
@@ -1108,7 +1125,10 @@ function checkOcrQuota_(me) {
 function ocr_(base64, mime) {
   if (!base64) throw err_('VALEUR', 'Aucune image reçue.');
   if (typeof Drive === 'undefined') throw err_('DRIVE', 'Le service Drive API n’est pas activé dans Apps Script (Services > + > Drive API).');
-  var blob = Utilities.newBlob(Utilities.base64Decode(base64), mime || 'image/jpeg', 'etiquette.jpg');
+  if (base64.length > 7000000) throw err_('VALEUR', 'Fichier trop lourd (5 Mo maximum).');
+  var isPdf = mime === 'application/pdf';
+  if (!isPdf && !/^image\//.test(String(mime || 'image/jpeg'))) throw err_('VALEUR', 'Envoie une photo ou un PDF.');
+  var blob = Utilities.newBlob(Utilities.base64Decode(base64), mime || 'image/jpeg', isPdf ? 'ticket.pdf' : 'etiquette.jpg');
   var file = Drive.Files.create({ name: 'ocr-etiquette-temporaire', mimeType: 'application/vnd.google-apps.document' },
     blob, { ocrLanguage: 'fr', fields: 'id' });
   try { return { text: DocumentApp.openById(file.id).getBody().getText() }; }
@@ -1542,6 +1562,68 @@ function ocr_(base64, mime) {
     return { prixKg: null, how: 'Prix non trouvé sur la photo' };
   }
 
+  /* ---------- Ticket de caisse (texte lu par OCR) ----------
+     Renvoie le magasin reconnu et une ligne par article avec un prix, rapprochée si possible
+     d'un ingrédient. Rien n'est inventé : sans prix lisible, la ligne est ignorée. */
+  var STORES = ['Lidl', 'Leclerc', 'Carrefour', 'Auchan', 'Intermarché', 'Super U', 'Hyper U', 'Monoprix', 'Franprix',
+    'Aldi', 'Casino', 'Netto', 'Grand Frais', 'Picard', 'Cora', 'Match', 'Biocoop', 'Naturalia', 'Leader Price', 'Spar', 'Action'];
+  var NOT_ITEM = /total|sous.?total|tva|t\.v\.a|carte|cb\b|espece|esp\b|rendu|monnaie|remise|reduc|fidel|avantage|ticket|caisse|merci|siret|tel\b|net a payer|a payer|paiement|montant|solde|points|bon d|article|nb ?art|date|heure/;
+  function parseReceipt(text, ingredients) {
+    var lines = String(text || '').split(/\r?\n/).map(function (l) { return l.replace(/\s+/g, ' ').trim(); }).filter(Boolean);
+    var flat = norm(lines.join(' '));
+    var magasin = '';
+    STORES.some(function (s) { if (flat.indexOf(norm(s)) >= 0) { magasin = s; return true; } return false; });
+    var fake = (ingredients || []).map(function (i) { return { name: i.name }; });
+    var items = [];
+    lines.forEach(function (l, i) {
+      var m = l.match(/(-?\d+[.,]\d{2})\s*(?:€|eur)?\s*(?:[A-Z]\d?|\*)?$/i);
+      var label = m ? l.slice(0, m.index).trim() : '';
+      // Prix seul sur sa ligne : l'article est sur la ligne d'avant.
+      if (m && !/[a-z]{3,}/i.test(label) && i > 0 && !/\d+[.,]\d{2}/.test(lines[i - 1])) label = lines[i - 1];
+      if (!m || !/[a-z]{3,}/i.test(label)) return;
+      var nl = norm(label);
+      if (NOT_ITEM.test(nl)) return;
+      var prix = num(m[1]);
+      if (!(prix > 0) || prix > 200) return;
+      var qtyMult = label.match(/^(\d+)\s*[x×]\s+/i);
+      var w = label.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|gr)\b/i);
+      var pack = w ? Math.round(num(w[1]) * (/kg/i.test(w[2]) ? 1000 : 1)) : null;
+      var clean = label.replace(/^\d+\s*[x×]\s+/i, '').replace(/(\d+(?:[.,]\d+)?)\s*(kg|g|gr)\b/ig, ' ').replace(/\s+/g, ' ').trim();
+      var match = matchRecipe(clean, fake);
+      items.push({ label: clean, prix: qtyMult ? round(prix / Number(qtyMult[1]), 2) : prix, pack: pack, ing: match ? match.name : '' });
+    });
+    return { magasin: magasin, items: items };
+  }
+
+  /* ---------- Code-barres : fiche Open Food Facts → valeurs pour 100 g ----------
+     Seules les valeurs présentes dans la fiche sont reprises (rien n'est deviné). */
+  var OFF_ALLERGENS = { 'en:gluten': 'gluten', 'en:milk': 'lactose', 'en:eggs': 'œuf', 'en:fish': 'poisson',
+    'en:crustaceans': 'crustacés', 'en:molluscs': 'crustacés', 'en:nuts': 'fruits à coque', 'en:peanuts': 'arachide',
+    'en:soybeans': 'soja', 'en:sesame-seeds': 'sésame' };
+  function validEan(code) {
+    var c = String(code || '').replace(/\D/g, '');
+    if (!/^(\d{8}|\d{12}|\d{13}|\d{14})$/.test(c)) return false;
+    var digits = c.split('').map(Number), check = digits.pop(), sum = 0;
+    digits.reverse().forEach(function (d, i) { sum += d * (i % 2 === 0 ? 3 : 1); });
+    return (10 - sum % 10) % 10 === check;
+  }
+  function parseOFF(json) {
+    var p = json && json.product;
+    if (!json || json.status !== 1 || !p) return null;
+    var n = p.nutriments || {};
+    var val = function (k) { var v = num(n[k]); return v === null ? null : round(v, 1); };
+    var kcal = num(n['energy-kcal_100g']);
+    if (kcal === null && num(n['energy-kj_100g']) !== null) kcal = num(n['energy-kj_100g']) / 4.184;
+    if (kcal === null && num(n.energy_100g) !== null) kcal = num(n.energy_100g) / 4.184;
+    var tags = {};
+    (p.allergens_tags || []).forEach(function (t) { if (OFF_ALLERGENS[t]) tags[OFF_ALLERGENS[t]] = 1; });
+    var name = [p.product_name_fr || p.product_name, p.brands ? String(p.brands).split(',')[0].trim() : ''].filter(Boolean).join(' – ');
+    var res = { name: name, kcal: kcal === null ? null : Math.round(kcal), p: val('proteins_100g'), g: val('carbohydrates_100g'),
+      l: val('fat_100g'), f: val('fiber_100g'), allergenes: Object.keys(tags), quantity: p.quantity || '', found: [] };
+    ['kcal', 'p', 'g', 'l', 'f'].forEach(function (k) { if (res[k] !== null) res.found.push(k); });
+    return res;
+  }
+
   /* ---------- Remplacer un ingrédient précis (kcal et protéines conservées) ---------- */
   function replaceWith(recipe, idx, opts, fromName, toName) {
     var Kt = num(opts.kcal) || recipeTotals(recipe, idx).portion.kcal;
@@ -1751,7 +1833,7 @@ function ocr_(base64, mime) {
     activityFactor: activityFactor, targets: targets, macroSplit: macroSplit, weightTrend: weightTrend,
     mondayOf: mondayOf, isoDay: isoDay, parseDay: parseDay,
     bestOffer: bestOffer, priceLine: priceLine, mealItems: mealItems, needsFromMeals: needsFromMeals, foyerList: foyerList,
-    splitList: splitList, excludedBy: excludedBy, autoPlan: autoPlan };
+    splitList: splitList, excludedBy: excludedBy, autoPlan: autoPlan, parseReceipt: parseReceipt, STORES: STORES, parseOFF: parseOFF, validEan: validEan };
   root.Calc = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
