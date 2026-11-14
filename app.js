@@ -2,7 +2,7 @@
    Les écrans sont dans screens-*.js (ils s'enregistrent avec App.route). */
 (function () {
   'use strict';
-  var VERSION = '2.3.0';
+  var VERSION = '2.4.0';
   var C = window.Calc, Store = window.Store, Api = window.Api, Sync = Api.Sync;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
@@ -562,6 +562,7 @@
       '<div class="stack">' +
       item('#/profil', 'Mes objectifs') + item('#/poids', 'Mon poids') + item('#/foyer', 'Mon foyer') +
       item('#/stock', 'Stock cuisine') + item('#/session', 'Session de cuisine (batch)') +
+      item('#/inviter', 'Inviter des proches (QR code)') +
       '<a class="btn big" href="guide.html">Mode d’emploi</a>' +
       (adm ? '<a class="btn ghost big" href="#/connexion">Paramètres de connexion</a>' : '') +
       (S.lastError ? '<button class="btn ghost big" id="x-report">Copier le dernier rapport d’erreur</button>' : '') +
