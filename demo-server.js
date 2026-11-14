@@ -44,7 +44,7 @@ var HEADS = {
 };
 var EXTRA_COLS = { 'Ingrédients': { 14: 'Allergènes' }, 'Stock cuisine': { 5: 'Foyer' } };
 
-var TOKEN_DAYS = 60;
+var TOKEN_DAYS = 365; // connexion gardée un an, renouvelée à chaque utilisation
 var MAX_FAILS = 5;
 var LOCK_SECONDS = 15 * 60;
 var HASH_ROUNDS = 300;
@@ -132,7 +132,11 @@ function handle_(req) {
     else {
       me = auth_(req.token);
       var USER = {
-        data: function () { var d = getData_(me); d.me = publicMe_(me); return d; },
+        data: function () {
+          var d = getData_(me); d.me = publicMe_(me);
+          var fresh = renewToken_(req.token, me); if (fresh) d.token = fresh; // rester connecté tant qu'on utilise l'appli
+          return d;
+        },
         check: function () { return { me: publicMe_(me) }; },
         changePassword: function () { return withLock_(function () { return changePassword_(me, req.oldPassword, req.newPassword); }); },
         setEmail: function () { return withLock_(function () { return setEmail_(me, req.email); }); },
@@ -476,6 +480,12 @@ function setEmail_(me, email) {
   return { email: e };
 }
 
+// Jeton renouvelé automatiquement s'il a plus d'une semaine : on reste connecté tant qu'on ouvre l'appli
+// au moins une fois par an. « Se déconnecter » ou un changement de mot de passe y mettent fin.
+function renewToken_(token, acc) {
+  var exp = Number(String(token || '').split('|')[1]) || 0;
+  return exp - Date.now() < (TOKEN_DAYS - 7) * 86400000 ? makeToken_(acc) : null;
+}
 function makeToken_(acc) {
   var exp = Date.now() + TOKEN_DAYS * 86400000;
   var payload = acc.id + '|' + exp + '|' + acc.salt.slice(0, 8);
@@ -803,10 +813,17 @@ function saveChecks_(me, week, checked) {
   return {};
 }
 
+// Une seule ligne de stock par ingrédient et par foyer : les doublons éventuels sont additionnés puis effacés.
+function stockLine_(key, ing) {
+  var rows = stockRows_(key).filter(function (r) { return s_(r[0]) === ing; });
+  if (!rows.length) return null;
+  var total = rows.reduce(function (t, r) { return t + (n_(r[1]) || 0); }, 0);
+  rows.slice(1).forEach(function (r) { clearRow_(TABS.STO, r.row, 5); });
+  return { row: rows[0].row, qty: total, remarque: s_(rows[0][3]) };
+}
 function addStock_(key, ing, delta) {
-  var row = stockRows_(key).filter(function (r) { return s_(r[0]) === ing; })[0];
-  var s = sheet_(TABS.STO);
-  if (row) s.getRange(row.row, 2, 1, 4).setValues([[Math.max(0, (n_(row[1]) || 0) + delta), today_(), s_(row[3]), key]]);
+  var line = stockLine_(key, ing);
+  if (line) sheet_(TABS.STO).getRange(line.row, 2, 1, 4).setValues([[Math.max(0, line.qty + delta), today_(), line.remarque, key]]);
   else if (delta > 0) appendRow_(TABS.STO, [ing, delta, today_(), '', key]);
 }
 
@@ -853,9 +870,9 @@ function setStock_(me, items) {
   var key = key_(me);
   (items || []).forEach(function (it) {
     var q = checkNumber_(it.qty, 'Quantité en stock', 0, 1000000);
-    var row = stockRows_(key).filter(function (r) { return s_(r[0]) === it.ing; })[0];
-    if (row) sheet_(TABS.STO).getRange(row.row, 2, 1, 4).setValues([[q === '' ? 0 : q, today_(), s_(row[3]), key]]);
-    else appendRow_(TABS.STO, [it.ing, q === '' ? 0 : q, today_(), '', key]);
+    var line = stockLine_(key, it.ing);
+    if (line) sheet_(TABS.STO).getRange(line.row, 2, 1, 4).setValues([[q === '' ? 0 : q, today_(), line.remarque, key]]);
+    else if (q) appendRow_(TABS.STO, [it.ing, q, today_(), '', key]);
   });
   return { count: (items || []).length };
 }
@@ -923,7 +940,7 @@ function applyProposal_(type, d, by) {
     return addRecipe_(d.recipe);
   }
   if (type === 'ingrédient') return addIngredient_(d.ingredient);
-  if (type === 'prix') return upsertOffer_(d.offer, by);
+  if (type === 'prix') { (d.offers || [d.offer]).forEach(function (o) { upsertOffer_(o, by); }); return {}; }
   if (type === 'photo') return setPhoto_(d.recipe, d.image, by);
   throw err_('VALEUR', 'Type inconnu.');
 }
@@ -1116,7 +1133,10 @@ function checkOcrQuota_(me) {
 function ocr_(base64, mime) {
   if (!base64) throw err_('VALEUR', 'Aucune image reçue.');
   if (typeof Drive === 'undefined') throw err_('DRIVE', 'Le service Drive API n’est pas activé dans Apps Script (Services > + > Drive API).');
-  var blob = Utilities.newBlob(Utilities.base64Decode(base64), mime || 'image/jpeg', 'etiquette.jpg');
+  if (base64.length > 7000000) throw err_('VALEUR', 'Fichier trop lourd (5 Mo maximum).');
+  var isPdf = mime === 'application/pdf';
+  if (!isPdf && !/^image\//.test(String(mime || 'image/jpeg'))) throw err_('VALEUR', 'Envoie une photo ou un PDF.');
+  var blob = Utilities.newBlob(Utilities.base64Decode(base64), mime || 'image/jpeg', isPdf ? 'ticket.pdf' : 'etiquette.jpg');
   var file = Drive.Files.create({ name: 'ocr-etiquette-temporaire', mimeType: 'application/vnd.google-apps.document' },
     blob, { ocrLanguage: 'fr', fields: 'id' });
   try { return { text: DocumentApp.openById(file.id).getBody().getText() }; }

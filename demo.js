@@ -148,6 +148,7 @@
 
   var SAMPLE = {
     prix: 'FROMAGE BLANC 0%\n1 kg\n2,15 €\nPrix au kg : 2,15 €',
+    ticket: 'LIDL\n12 rue de la Gare\nRIZ BASMATI 1KG 2,49 A\nFILET POULET 500G 5,79 A\n2 x BROCOLI 1KG 3,58 A\nTOMATES 1KG\n1,99 A\nSOUS-TOTAL 13,85\nTOTAL 13,85\nCB 13,85\nMerci de votre visite',
     nutrition: 'Skyr nature\nValeurs nutritionnelles pour 100 g\nÉnergie 263 kJ / 62 kcal\nMatières grasses 0,2 g\ndont acides gras saturés 0,1 g\nGlucides 3,6 g\ndont sucres 3,6 g\nFibres alimentaires 0 g\nProtéines 11 g\nSel 0,1 g'
   };
 
@@ -156,7 +157,7 @@
       load();
       return new Promise(function (resolve, reject) {
         setTimeout(function () {
-          if (action === 'ocr') { resolve({ ok: true, text: payload.kind === 'prix' ? SAMPLE.prix : SAMPLE.nutrition }); return; }
+          if (action === 'ocr') { resolve({ ok: true, text: SAMPLE[payload.kind] || SAMPLE.nutrition }); return; }
           var res = server.handle(Object.assign({ action: action }, payload || {}));
           if (action !== 'data' && action !== 'foyerWeek' && action !== 'photos' && action !== 'dashboard') { recompute(); save(); }
           if (res.ok) resolve(res); else reject(res);

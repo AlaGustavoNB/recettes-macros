@@ -33,7 +33,7 @@
       return '<select id="' + id + '">' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (String(o[0]) === String(cur) ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';
     };
     var html = '<section class="screen"><div class="row between"><h1>Recettes</h1>' +
-      '<a class="btn small" href="#/proposer">' + (A.isAdmin() ? '+ Recette' : '+ Proposer') + '</a></div>' +
+      '<a class="btn small soft" href="#/proposer">' + (A.isAdmin() ? '+ Nouvelle recette' : '+ Proposer une recette') + '</a></div>' +
       '<p class="muted">' + esc(S.me.name) + ' · ' + fmt(A.perMeal().kcal) + ' kcal par repas</p>' +
       '<input id="r-search" class="search" type="search" placeholder="Rechercher une recette" value="' + esc(f.q) + '" aria-label="Rechercher">' +
       '<details class="filters"' + (active ? ' open' : '') + '><summary>Filtres et tri' + (active ? ' (' + active + ')' : '') + '</summary><div class="grid2">' +

@@ -282,3 +282,15 @@ nav#nav .dot[hidden] { display: none; }
 @media (max-width: 420px) {
   .status .upd { display: none; }
 }
+.stock-li:not(.has) .s-name { font-weight: 500; color: var(--muted); }
+.stock-li .qty-in::placeholder { color: var(--muted); }
+.btn.soft { background: var(--accent-soft); border-color: var(--accent-soft); color: var(--accent); }
+.screen > .row.between > h1 { flex: 1; min-width: 0; }
+footer.legal { margin: 28px 0 8px; padding-top: 12px; border-top: 1px solid var(--line); text-align: center; font-size: .78rem; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+footer.legal a { color: var(--muted); display: inline-flex; align-items: center; justify-content: center; min-height: 32px; }
+ul.shop li.shop-line { display: flex; align-items: center; }
+ul.shop li.shop-line > label { flex: 1; min-width: 0; padding-right: 4px; }
+.price-btn { min-width: 44px; width: 44px; padding: 0; margin-right: 10px; font-weight: 800; color: var(--accent); }
+li.price-form { background: var(--bg); padding: 4px 14px 12px; }
+.receipt-row { border-top: 1px solid var(--soft); padding: 10px 0; }
+.receipt-row .row { gap: 10px; }

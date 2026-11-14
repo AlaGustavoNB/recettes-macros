@@ -142,18 +142,21 @@
       (S.data.foyer ? '<button class="btn ghost small" id="l-fw">Actualiser les repas du foyer</button>' : '') +
       (done ? '<div class="notice">Courses terminées le ' + esc(A.dayFr(done)) + ' : le coché a été ajouté au stock.</div>' : '') +
       '<label class="toggle"><input type="checkbox" id="l-stock"' + (useStock ? ' checked' : '') + '> Retrancher le stock cuisine</label>' +
+      (L.lines.length ? '<p class="muted small">Touche <b>€</b> sur un article pour noter son prix (à la main ou en photo de l’étiquette), ou ' +
+        '<a href="#/ticket">lis ton ticket de caisse</a> après les courses.</p>' : '') +
       (L.warnings.length ? '<div class="notice warn">' + L.warnings.map(esc).join('<br>') + '</div>' : '') +
       (!L.lines.length ? '<p>Rien à acheter. <a href="#/semaine">Remplir le planning</a>.</p>' : '') +
       C.RAYONS.filter(function (r) { return groups[r]; }).map(function (r) {
         return '<h2 class="rayon">' + esc(r.charAt(0).toUpperCase() + r.slice(1)) + '</h2><ul class="shop">' + groups[r].map(function (l) {
           var on = !!isC[l.name], none = l.buy <= 0;
-          return '<li class="' + (on ? 'done' : '') + (none ? ' none' : '') + '"><label>' +
+          return '<li class="shop-line' + (on ? ' done' : '') + (none ? ' none' : '') + '"><label>' +
             '<input type="checkbox" data-c="' + esc(l.name) + '"' + (on || none ? ' checked' : '') + (none ? ' disabled' : '') + '>' +
             '<span class="s-name">' + esc(l.name) + (l.stock > 0 ? '<small>besoin ' + g(l.need) + ' − stock ' + g(l.stock) + '</small>' : '') +
             (l.packs ? '<small>pour ' + g(l.buy) + '</small>' : '') +
             (l.magasin && l.magasin !== 'Exemple' && l.magasin !== 'Démo' ? '<small>' + esc(l.magasin) + '</small>' : '') + '</span>' +
             '<span class="s-qty">' + (none ? 'en stock' : qtyText(l)) + '<small>' + (none ? '' : (l.cost === null ? '<span class="warn-text">prix manquant</span>' : euro(l.cost))) + '</small></span>' +
-            '</label></li>';
+            '</label><button class="btn ghost price-btn" data-price="' + esc(l.name) + '" aria-label="Noter le prix de ' + esc(l.name) + '">€</button></li>' +
+            (S.priceFor === l.name ? '<li class="price-form">' + priceForm(l) + '</li>' : '');
         }).join('') + '</ul>';
       }).join('') +
       (L.lines.length ? '<div class="total"><span>Total estimé</span><b>' + euro(L.total) + '</b></div>' +
@@ -161,6 +164,7 @@
         '<p class="muted center">' + left + ' article(s) restant(s)</p>' +
         '<div class="actions"><button class="btn primary big" id="l-finish"' + (checked.length ? '' : ' disabled') + '>J’ai fini mes courses</button>' +
         '<p class="muted small center">Ajoute ce qui est coché au stock' + (S.data.foyer ? ' du foyer' : '') + ' et remet la liste à zéro.</p>' +
+        '<a class="btn big" href="#/ticket">🧾 Ticket de caisse : relever les prix</a>' +
         '<button class="btn big" id="l-share">Partager la liste</button>' +
         '<button class="btn ghost" id="l-uncheck">Tout décocher</button></div>' : '') + '</section>';
     return { tab: 'courses', html: html, bind: function (el) {
@@ -173,6 +177,10 @@
         };
       });
       $('#l-stock', el).onchange = function (e) { Store.set('useStock', e.target.checked); A.render(); };
+      $$('[data-price]', el).forEach(function (b) {
+        b.onclick = function () { var n = b.getAttribute('data-price'); S.priceFor = S.priceFor === n ? null : n; A.render(); };
+      });
+      bindPriceForm(el);
       var fw = $('#l-fw', el); if (fw) fw.onclick = function () { A.act('lecture des repas du foyer', async function () { await A.fetchFoyerWeek(week); A.render(); A.toast('Liste à jour'); }); };
       var un = $('#l-uncheck', el); if (un) un.onclick = function () { setChecked(week, []); A.render(); };
       var fin = $('#l-finish', el);
@@ -198,49 +206,199 @@
     } };
   });
 
+  /* ================= Prix relevés pendant les courses ================= */
+  function knownStores() {
+    var s = {}; (S.data.offers || []).forEach(function (o) { if (o.magasin) s[o.magasin] = 1; });
+    C.STORES.forEach(function (x) { s[x] = 1; });
+    return Object.keys(s).sort(function (a, b) { return a.localeCompare(b, 'fr'); });
+  }
+  function storeList() { return '<datalist id="stores">' + knownStores().map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>'; }
+  function offerFor(ing, mag) { return (S.data.offers || []).filter(function (o) { return o.ing === ing && (!mag || C.norm(o.magasin) === C.norm(mag)); })[0]; }
+
+  function priceForm(l) {
+    var mag = Store.get('lastStore', ''), o = offerFor(l.name, mag) || offerFor(l.name);
+    var pack = l.packSize || (o && o.pack) || Math.max(1, Math.round(l.buy || 0)) || '';
+    return '<div class="pf"><div class="panel-title">Prix de ' + esc(l.name) + '</div>' +
+      A.field('Magasin', '<input id="pf-mag" list="stores" autocomplete="off" value="' + esc(mag) + '" placeholder="ex. Lidl">') + storeList() +
+      '<div class="grid2">' + A.field('Contenance (g)', '<input id="pf-pack" type="number" inputmode="numeric" value="' + esc(pack) + '">') +
+      A.field('Prix payé (€)', A.numIn('pf-prix', '', ' placeholder="ex. 2,49"')) + '</div>' +
+      '<label class="btn ghost file"><input type="file" accept="image/*" capture="environment" id="pf-photo">📷 Photo de l’étiquette</label><div id="pf-out"></div>' +
+      '<div class="row wrap"><button class="btn primary" id="pf-save" data-ing="' + esc(l.name) + '">' + (A.isAdmin() ? 'Enregistrer le prix' : 'Envoyer le prix') + '</button>' +
+      '<button class="btn ghost" id="pf-cancel">Annuler</button></div></div>';
+  }
+  // Admin : appliqué tout de suite ; sinon : proposé à l'admin. Marche hors ligne (envoyé plus tard).
+  function sendPrices(offers, title) {
+    offers = offers.filter(function (o) { return o.ing && o.magasin && o.pack > 0 && o.prix > 0; });
+    if (!offers.length) { A.toast('Rien à envoyer : vérifie magasin, contenance et prix.'); return false; }
+    Store.set('lastStore', offers[0].magasin);
+    if (A.isAdmin()) {
+      S.data.offers = (S.data.offers || []).filter(function (x) {
+        return !offers.some(function (o) { return o.ing === x.ing && C.norm(o.magasin) === C.norm(x.magasin); });
+      }).concat(offers.map(function (o) { return Object.assign({ date: C.isoDay(new Date()) }, o); }));
+      A.saveData();
+    }
+    A.Sync.push(null, 'propose', { type: 'prix', title: title, data: { offers: offers } });
+    A.toast(A.isAdmin() ? offers.length + ' prix enregistré(s)' : offers.length + ' prix envoyé(s) à l’admin. Merci !');
+    return true;
+  }
+  function readPriceText(text) {
+    var flat = String(text || '').replace(/\s+/g, ' ');
+    var p = flat.match(/(\d+[.,]\d{2})\s*€/) || flat.match(/€\s*(\d+[.,]\d{2})/), w = flat.match(/(\d+(?:[.,]\d+)?)\s*(kg|g)\b/i);
+    return { prix: p ? p[1] : null, pack: w ? Math.round(C.num(w[1]) * (/kg/i.test(w[2]) ? 1000 : 1)) : null };
+  }
+  function bindPriceForm(el) {
+    var save = $('#pf-save', el); if (!save) return;
+    $('#pf-cancel', el).onclick = function () { S.priceFor = null; A.render(); };
+    $('#pf-photo', el).onchange = function (e) {
+      var f = e.target.files[0]; e.target.value = ''; if (!f) return;
+      A.act('lecture d’une étiquette de prix', async function () {
+        var img = await A.shrink(f, 1600, 0.85);
+        var r = await A.Api.call('ocr', { token: S.token, image: img.b64, mime: 'image/jpeg', kind: 'prix' });
+        var v = readPriceText(r.text);
+        if (v.prix) $('#pf-prix', el).value = v.prix;
+        if (v.pack) $('#pf-pack', el).value = v.pack;
+        $('#pf-out', el).innerHTML = '<div class="notice' + (v.prix ? '' : ' warn') + '">' + (v.prix ? 'Lu : ' + esc(v.prix) + ' €' + (v.pack ? ' pour ' + g(v.pack) : '') + '. Vérifie.' : 'Prix non trouvé : saisis-le à la main.') + '</div>';
+      });
+    };
+    save.onclick = function () {
+      var o = { ing: save.getAttribute('data-ing'), magasin: $('#pf-mag', el).value.trim(), pack: C.num($('#pf-pack', el).value), prix: C.num($('#pf-prix', el).value) };
+      if (!o.magasin || !o.pack || !o.prix) { A.toast('Magasin, contenance et prix sont obligatoires.'); return; }
+      if (sendPrices([o], o.ing + ' — ' + o.magasin)) { S.priceFor = null; A.render(); }
+    };
+  }
+
+  /* ---------- Ticket de caisse : photo ou fichier (image ou PDF) ---------- */
+  function fileB64(file) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result).split(',')[1]); };
+      fr.onerror = function () { reject(A.Api.ApiError('Fichier illisible.', 'PHOTO')); };
+      fr.readAsDataURL(file);
+    });
+  }
+  A.route(/^#\/ticket$/, function () {
+    var R = S.receipt;
+    var ings = (S.data.ingredients || []).map(function (i) { return i.name; }).sort(function (a, b) { return a.localeCompare(b, 'fr'); });
+    var opts = function (cur) { return '<option value="">— ignorer —</option>' + ings.map(function (n) { return '<option' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join(''); };
+    var html = '<section class="screen"><a class="back" href="#/courses">‹ Courses</a><h1>Ticket de caisse</h1>' +
+      '<p class="muted">L’appli lit le ticket (gratuit, via Google) et propose un prix par article reconnu. Tu vérifies avant d’envoyer.' +
+      (A.isAdmin() ? '' : ' L’admin valide ensuite les prix.') + '</p>' +
+      '<div class="stack"><label class="btn primary big file"><input type="file" accept="image/*" capture="environment" id="t-cam">📷 Photographier le ticket</label>' +
+      '<label class="btn big file"><input type="file" accept="image/*,application/pdf" id="t-file">📎 Joindre un ticket (photo ou PDF)</label></div>' +
+      '<div id="t-out"></div>' +
+      (R ? '<div class="panel"><div class="panel-title">' + R.items.length + ' article(s) lu(s)</div>' +
+        A.field('Magasin', '<input id="t-mag" list="stores" autocomplete="off" value="' + esc(R.magasin || Store.get('lastStore', '')) + '">') + storeList() +
+        (R.items.length ? R.items.map(function (it, i) {
+          return '<div class="receipt-row"><div class="muted small">« ' + esc(it.label) + ' »</div>' +
+            '<select data-ri="' + i + '" aria-label="Ingrédient correspondant">' + opts(it.ing) + '</select>' +
+            '<div class="row"><label class="field grow"><span>Contenance (g)</span><input type="number" inputmode="numeric" data-rp="' + i + '" value="' + esc(it.pack || '') + '"></label>' +
+            '<label class="field grow"><span>Prix (€)</span>' + A.numIn('rx-' + i, it.prix, ' data-rx="' + i + '"') + '</label></div></div>';
+        }).join('') + '<button class="btn primary big" id="t-send">' + (A.isAdmin() ? 'Enregistrer les prix' : 'Envoyer les prix à l’admin') + '</button>'
+          : '<p>Aucun article avec un prix n’a été reconnu. Réessaie avec une photo plus nette, à plat.</p>') +
+        (R.text ? '<details><summary>Texte lu sur le ticket</summary><pre>' + esc(R.text) + '</pre></details>' : '') + '</div>' : '') + '</section>';
+    return { tab: 'courses', html: html, bind: function (el) {
+      var read = async function (file) {
+        if (!file) return;
+        if (!navigator.onLine) { A.showError(A.Api.ApiError('La lecture du ticket demande du réseau. Garde la photo et réessaie plus tard.', 'HORS_LIGNE')); return; }
+        var pdf = file.type === 'application/pdf';
+        if (pdf && file.size > 5e6) { A.toast('PDF trop lourd (5 Mo maximum).'); return; }
+        $('#t-out', el).innerHTML = '<p class="muted">Lecture du ticket…</p>';
+        A.act('lecture d’un ticket de caisse', async function () {
+          var b64 = pdf ? await fileB64(file) : (await A.shrink(file, 2200, 0.85)).b64;
+          var r = await A.Api.call('ocr', { token: S.token, image: b64, mime: pdf ? 'application/pdf' : 'image/jpeg', kind: 'ticket' });
+          var p = C.parseReceipt(r.text, S.data.ingredients);
+          S.receipt = { magasin: p.magasin, items: p.items, text: r.text };
+          A.render();
+        });
+      };
+      $('#t-cam', el).onchange = function (e) { var f = e.target.files[0]; e.target.value = ''; read(f); };
+      $('#t-file', el).onchange = function (e) { var f = e.target.files[0]; e.target.value = ''; read(f); };
+      var send = $('#t-send', el);
+      if (send) send.onclick = function () {
+        var mag = $('#t-mag', el).value.trim();
+        if (!mag) { A.toast('Indique le magasin.'); return; }
+        var offers = R.items.map(function (it, i) {
+          return { ing: $('[data-ri="' + i + '"]', el).value, magasin: mag, pack: C.num($('[data-rp="' + i + '"]', el).value), prix: C.num($('[data-rx="' + i + '"]', el).value) };
+        }).filter(function (o) { return o.ing; });
+        var missing = offers.filter(function (o) { return !o.pack || !o.prix; }).length;
+        if (missing && !confirm(missing + ' article(s) sans contenance ou prix seront ignorés. Continuer ?')) return;
+        if (sendPrices(offers, 'Ticket ' + mag + ' (' + offers.length + ' prix)')) { S.receipt = null; A.go('#/courses'); }
+      };
+    } };
+  });
+
   /* ================= Stock ================= */
+  // Une ligne par ingrédient du catalogue, rangée par rayon ; chaque quantité s'enregistre dès qu'on la change.
+  function setStockLocal(items) {
+    var st = S.data.stock = S.data.stock || [];
+    items.forEach(function (it) {
+      var rows = st.filter(function (s) { return s.ing === it.ing; });
+      if (rows.length) { rows[0].qty = it.qty; rows[0].date = C.isoDay(new Date()); rows.slice(1).forEach(function (r) { st.splice(st.indexOf(r), 1); }); }
+      else st.push({ ing: it.ing, qty: it.qty, date: C.isoDay(new Date()) });
+      A.Sync.push('stock:' + it.ing, 'setStock', { items: [{ ing: it.ing, qty: it.qty }] });
+    });
+    A.saveData();
+  }
+
   A.route(/^#\/stock$/, function () {
-    var st = (S.data.stock || []).filter(function (s) { return C.num(s.qty) > 0 || s.ing; });
-    var names = S.data.ingredients.map(function (i) { return i.name; });
-    return { tab: 'plus', html: '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><h1>Stock cuisine</h1>' +
-      '<p class="muted">' + (S.data.foyer ? 'Commun au foyer « ' + esc(S.data.foyer.name) + ' ».' : 'Ton stock.') + ' Il diminue quand tu marques un repas cuisiné et augmente quand tu termines tes courses.</p>' +
-      (st.length ? '<ul class="shop">' + st.map(function (s, i) {
-        return '<li><div class="stock-row"><span class="s-name">' + esc(s.ing) + '<small>' + (s.date ? 'mis à jour le ' + esc(A.dayFr(s.date)) : '') + '</small></span>' +
-          '<input type="number" inputmode="numeric" class="qty-in" data-s="' + i + '" value="' + esc(Math.round(C.num(s.qty) || 0)) + '" aria-label="Quantité en g"></div></li>';
-      }).join('') + '</ul>' : '<p>Stock vide.</p>') +
-      '<div class="panel"><div class="panel-title">Ajouter ou dire ce que j’ai</div>' +
+    var have = A.stockMap(), dates = {};
+    (S.data.stock || []).forEach(function (s) { if (s.date && (!dates[s.ing] || s.date > dates[s.ing])) dates[s.ing] = s.date; });
+    var only = Store.get('stockOnly', false), q = Store.get('stockQ', '');
+    var groups = {}, n = 0;
+    (S.data.ingredients || []).slice().sort(function (a, b) { return a.name.localeCompare(b.name, 'fr'); }).forEach(function (i) {
+      var qty = Math.round(have[i.name] || 0);
+      if (only && !qty) return;
+      (groups[C.rayonOf(i)] = groups[C.rayonOf(i)] || []).push({ name: i.name, qty: qty, date: dates[i.name] });
+      if (qty) n++;
+    });
+    // Ingrédients en stock qui ne sont plus au catalogue : gardés à part.
+    Object.keys(have).forEach(function (k) { if (!C.find(S.idx, k) && have[k] > 0) (groups.autre = groups.autre || []).push({ name: k, qty: Math.round(have[k]), date: dates[k], gone: true }); });
+    var speech = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    var html = '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><h1>Stock cuisine</h1>' +
+      '<p class="muted">' + (S.data.foyer ? 'Commun au foyer « ' + esc(S.data.foyer.name) + ' ».' : 'Ton stock.') +
+      ' Quantités en grammes, enregistrées dès que tu les changes. Le stock baisse quand un repas est cuisiné et monte quand tu termines tes courses.</p>' +
+      '<input id="st-q" class="search" type="search" placeholder="Rechercher un ingrédient" value="' + esc(q) + '" aria-label="Rechercher">' +
+      '<label class="toggle"><input type="checkbox" id="st-only"' + (only ? ' checked' : '') + '> Seulement ce que j’ai (' + n + ')</label>' +
+      C.RAYONS.filter(function (r) { return groups[r]; }).map(function (r) {
+        return '<h2 class="rayon">' + esc(r.charAt(0).toUpperCase() + r.slice(1)) + '</h2><ul class="shop">' + groups[r].map(function (it) {
+          return '<li class="stock-li' + (it.qty ? ' has' : '') + '" data-name="' + esc(it.name) + '"><div class="stock-row">' +
+            '<span class="s-name">' + esc(it.name) + '<small>' + (it.gone ? 'n’est plus au catalogue · ' : '') + (it.date && it.qty ? 'màj ' + esc(A.dayFr(it.date)) : (it.qty ? '' : 'pas en stock')) + '</small></span>' +
+            '<input type="number" inputmode="numeric" min="0" class="qty-in" data-ing="' + esc(it.name) + '" value="' + (it.qty || '') + '" placeholder="0" aria-label="Stock de ' + esc(it.name) + ' en g"></div></li>';
+        }).join('') + '</ul>';
+      }).join('') +
+      (only && !n ? '<p>Rien en stock pour l’instant.</p>' : '') +
+      '<div class="panel"><div class="panel-title">Dire ou écrire ce que j’ai</div>' +
       '<textarea id="s-text" rows="2" placeholder="ex. 500 g de riz basmati cru, 1 kg de poulet"></textarea>' +
-      '<div class="row wrap">' + ((window.SpeechRecognition || window.webkitSpeechRecognition) ? '<button class="btn" id="s-mic">🎤 Dicter</button>' : '') +
-      '<button class="btn" id="s-parse">Lire</button></div>' +
-      '<div class="row"><input id="s-ing" list="ing-names" placeholder="Ingrédient (nom exact)" aria-label="Ingrédient"><input id="s-qty" type="number" inputmode="numeric" placeholder="g" class="qty-in" aria-label="Quantité en g"></div>' +
-      '<datalist id="ing-names">' + names.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>' +
-      '<button class="btn primary big" id="s-save">Enregistrer le stock</button></div></section>',
-      bind: function (el) {
-        var pending = {};
-        $$('[data-s]', el).forEach(function (inp) { inp.onchange = function () { pending[st[Number(inp.getAttribute('data-s'))].ing] = C.num(inp.value) || 0; }; });
-        var mic = $('#s-mic', el); if (mic) mic.onclick = function () { A.dictate($('#s-text', el), mic); };
-        $('#s-parse', el).onclick = function () {
-          var res = C.parseStock($('#s-text', el).value, S.data.ingredients);
-          res.items.forEach(function (it) { pending[it.ing] = it.qty; });
-          A.toast(res.items.length ? 'Lu : ' + res.items.map(function (x) { return x.ing + ' ' + x.qty + ' g'; }).join(', ') + '. Touche Enregistrer.' : 'Rien reconnu.');
+      '<div class="row wrap">' + (speech ? '<button class="btn" id="s-mic">🎤 Dicter</button>' : '') +
+      '<button class="btn primary" id="s-parse">Mettre à jour le stock</button></div></div></section>';
+    return { tab: 'plus', html: html, bind: function (el) {
+      var inp = $('#st-q', el);
+      var apply = function () {
+        var v = C.norm(inp.value);
+        $$('.stock-li', el).forEach(function (li) { li.hidden = v && C.norm(li.getAttribute('data-name')).indexOf(v) < 0; });
+        $$('ul.shop', el).forEach(function (ul) {
+          var any = $$('.stock-li', ul).some(function (li) { return !li.hidden; });
+          ul.hidden = !any; ul.previousElementSibling.hidden = !any;
+        });
+      };
+      inp.oninput = function () { Store.set('stockQ', inp.value); apply(); }; apply();
+      $('#st-only', el).onchange = function (e) { Store.set('stockOnly', e.target.checked); A.render(); };
+      $$('[data-ing]', el).forEach(function (i) {
+        i.onchange = function () {
+          var qty = Math.max(0, Math.round(C.num(i.value) || 0));
+          setStockLocal([{ ing: i.getAttribute('data-ing'), qty: qty }]);
+          i.closest('li').classList.toggle('has', qty > 0);
+          A.toast(i.getAttribute('data-ing') + ' : ' + (qty ? g(qty) : 'plus en stock'));
         };
-        $('#s-save', el).onclick = function () {
-          var ing = $('#s-ing', el).value.trim(), q = C.num($('#s-qty', el).value);
-          if (ing) {
-            if (!C.find(S.idx, ing)) { A.toast('Ingrédient inconnu (le nom doit être exact).'); return; }
-            if (q === null) { A.toast('Indique la quantité en g.'); return; }
-            pending[ing] = q;
-          }
-          var items = Object.keys(pending).map(function (k) { return { ing: k, qty: pending[k] }; });
-          if (!items.length) { A.toast('Aucun changement.'); return; }
-          items.forEach(function (it) {
-            var row = (S.data.stock = S.data.stock || []).filter(function (s) { return s.ing === it.ing; })[0];
-            if (row) { row.qty = it.qty; row.date = C.isoDay(new Date()); } else S.data.stock.push({ ing: it.ing, qty: it.qty, date: C.isoDay(new Date()) });
-          });
-          A.saveData();
-          A.Sync.push(null, 'setStock', { items: items });
-          A.toast('Stock enregistré'); A.render();
-        };
-      } };
+      });
+      var mic = $('#s-mic', el); if (mic) mic.onclick = function () { A.dictate($('#s-text', el), mic); };
+      $('#s-parse', el).onclick = function () {
+        var res = C.parseStock($('#s-text', el).value, S.data.ingredients);
+        if (!res.items.length) { A.toast('Rien reconnu. Écris par exemple « 500 g de riz basmati cru ».'); return; }
+        setStockLocal(res.items.map(function (it) { return { ing: it.ing, qty: Math.round(it.qty) }; }));
+        A.toast('Mis à jour : ' + res.items.map(function (x) { return x.ing + ' ' + g(x.qty); }).join(', ') + (res.unknown.length ? ' · non reconnu : ' + res.unknown.join(' / ') : ''));
+        A.render();
+      };
+    } };
   });
 })(window.App);
