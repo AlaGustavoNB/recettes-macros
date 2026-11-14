@@ -170,7 +170,7 @@
       };
       var cp = $('#f-copy', el); if (cp) cp.onclick = function () { A.copyText(f.code).then(function () { A.toast('Code copié'); }); };
       var sh = $('#f-share', el);
-      if (sh) sh.onclick = function () { navigator.share({ title: 'Rejoins mon foyer', text: 'Code du foyer « ' + f.name + ' » dans l’appli recettes : ' + f.code + '\n' + location.origin + location.pathname }).catch(function () {}); };
+      if (sh) sh.onclick = function () { navigator.share({ title: 'Rejoins mon foyer', text: 'Code du foyer « ' + f.name + ' » dans La Juste Assiette : ' + f.code + '\n' + location.origin + location.pathname }).catch(function () {}); };
       var lv = $('#f-leave', el);
       if (lv) lv.onclick = function () {
         if (!confirm('Quitter le foyer ? Le stock reste au foyer' + (f.members.length === 1 ? ' (et sera supprimé : tu es le dernier membre)' : '') + '.')) return;

@@ -7,7 +7,7 @@ window.makeDemoServer = function (env) {
     Logger = env.Logger, MailApp = env.MailApp, ScriptApp = env.ScriptApp, DriveApp = env.DriveApp,
     DocumentApp = env.DocumentApp, Drive = undefined, Calc = window.Calc;
 /**
- * Serveur de l'appli recettes : lit et écrit dans CE Google Sheet.
+ * Serveur de l'appli La Juste Assiette : lit et écrit dans CE Google Sheet.
  * À coller dans Extensions > Apps Script du Sheet (fichier Code.gs), puis déployer en
  * « Application Web » (Exécuter en tant que : moi ; Accès : tout le monde).
  *
@@ -525,7 +525,7 @@ function forgot_(email) {
     var code = String(100000 + Math.floor(Math.random() * 900000));
     cache.put('rst:' + acc.id, resetCodeHash_(acc.id, code), 900);
     cache.put('rstn:' + acc.id, '0', 900);
-    MailApp.sendEmail({ to: e, subject: 'Ton code pour changer de mot de passe',
+    MailApp.sendEmail({ to: e, subject: 'La Juste Assiette : ton code pour changer de mot de passe',
       body: 'Bonjour ' + acc.name + ',\n\nTon code : ' + code + '\nIl est valable 15 minutes.\n\n' +
         'Ton identifiant : ' + acc.id + '\n\nSi tu n’as rien demandé, ignore ce message.' });
   }
