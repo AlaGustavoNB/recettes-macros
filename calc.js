@@ -186,14 +186,17 @@
     var inRecipe = {};
     items.forEach(function (it) { inRecipe[it.name] = true; });
 
+    var only = opts.only || null;
     items.forEach(function (it, i) {
+      if (only && only.from && it.name !== only.from) return;
       var others = items.filter(function (_, j) { return j !== i; });
       var parts = split(others);
       var F = totals(parts.fix, idx), A = totals(parts.adj, idx);
       var candidates = idx.list.filter(function (c) {
+        if (only && only.to) return c.name === only.to && !inRecipe[c.name] && (num(c.kcal) || 0) > 0;
         return !inRecipe[c.name] && (num(c.kcal) || 0) > 0 && roleOf(c) === it.role;
       });
-      candidates.push(null); // null = retirer l'ingrédient
+      if (!(only && only.to)) candidates.push(null); // null = retirer l'ingrédient
       candidates.forEach(function (c) {
         var q, s, pc = c ? (num(c.p) || 0) / 100 : 0, kc = c ? (num(c.kcal) || 0) / 100 : 0;
         if (A.kcal > 0) {
@@ -230,11 +233,11 @@
       });
     });
     out.sort(function (a, b) { return a.score - b.score; });
-    // Une seule alternative par ingrédient de remplacement, 5 au maximum.
-    var seen = {}, res = [];
+    // Une seule alternative par ingrédient de remplacement, 5 au maximum (par défaut).
+    var seen = {}, res = [], max = opts.max || 5;
     out.forEach(function (a) {
       var key = a.replaced + '>' + a.by;
-      if (!seen[key] && res.length < 5) { seen[key] = true; res.push(a); }
+      if (!seen[key] && res.length < max) { seen[key] = true; res.push(a); }
     });
     return res;
   }
@@ -421,12 +424,216 @@
     return { prixKg: null, how: 'Prix non trouvé sur la photo' };
   }
 
-  var api = { ROLES: ROLES, RAYONS: RAYONS, S_MIN: S_MIN, S_MAX: S_MAX, norm: norm, num: num, round: round,
+  /* ---------- Remplacer un ingrédient précis (kcal et protéines conservées) ---------- */
+  function replaceWith(recipe, idx, opts, fromName, toName) {
+    var Kt = num(opts.kcal) || recipeTotals(recipe, idx).portion.kcal;
+    var margin = opts.margin == null ? 0.10 : opts.margin;
+    var all = alternatives(recipe, idx, { kcal: Kt, margin: margin, only: { from: fromName, to: toName } });
+    return all[0] || null;
+  }
+  // Ingrédients de même rôle qui peuvent remplacer « fromName » dans cette recette.
+  function replacementCandidates(recipe, idx, opts, fromName) {
+    var Kt = num(opts.kcal) || recipeTotals(recipe, idx).portion.kcal;
+    return alternatives(recipe, idx, { kcal: Kt, margin: opts.margin == null ? 0.10 : opts.margin, only: { from: fromName }, max: 30 })
+      .filter(function (a) { return a.by; });
+  }
+
+  /* ---------- Objectifs proposés ---------- */
+  var ALLERGENES = ['gluten', 'lactose', 'œuf', 'poisson', 'crustacés', 'fruits à coque', 'arachide', 'soja', 'sésame', 'porc', 'alcool'];
+  // Métier : assis 1,2 · debout 1,375 · physique 1,55 ; + 0,05 par séance de sport (max 1,9).
+  function activityFactor(seances, metier) {
+    var base = { 'assis': 1.2, 'debout': 1.375, 'physique': 1.55 }[norm(metier)] || 1.2;
+    return Math.min(1.9, base + 0.05 * Math.max(0, Math.min(14, num(seances) || 0)));
+  }
+  var GOAL_K = { 'seche': 0.80, 'maintien': 1, 'masse': 1.10 };
+  var PROT_GKG = { 'seche': 2.0, 'maintien': 1.6, 'masse': 1.8 };
+  // p : { sexe 'H'|'F', annee, taille (cm), poids (kg), seances, metier, objectif, protGkg }
+  function targets(p, year) {
+    var w = num(p.poids), h = num(p.taille), y = num(p.annee);
+    if (!w || !h || !y) return null;
+    var age = (year || new Date().getFullYear()) - y;
+    var bmr = 10 * w + 6.25 * h - 5 * age + (String(p.sexe).toUpperCase() === 'F' ? -161 : 5);
+    var factor = activityFactor(p.seances, p.metier);
+    var goal = norm(p.objectif) || 'maintien';
+    var kcal = Math.round(bmr * factor * (GOAL_K[goal] || 1) / 10) * 10;
+    var gkg = num(p.protGkg) || PROT_GKG[goal] || 1.6;
+    var prot = Math.round(w * gkg);
+    var lip = Math.round(w * 0.9);
+    var glu = Math.max(0, Math.round((kcal - prot * 4 - lip * 9) / 4));
+    return { kcal: kcal, prot: prot, lip: lip, glu: glu, bmr: Math.round(bmr), factor: round(factor, 3), age: age, protGkg: gkg };
+  }
+  // Glucides / lipides indicatifs pour des kcal et protéines données.
+  function macroSplit(kcal, prot, poids) {
+    kcal = num(kcal); prot = num(prot);
+    if (!kcal || !prot) return null;
+    var lip = num(poids) ? Math.round(num(poids) * 0.9) : Math.round(kcal * 0.28 / 9);
+    return { lip: lip, glu: Math.max(0, Math.round((kcal - prot * 4 - lip * 9) / 4)) };
+  }
+
+  /* ---------- Poids : tendance et ajustement proposé ---------- */
+  function mondayOf(d) {
+    var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    var wd = (x.getDay() + 6) % 7; x.setDate(x.getDate() - wd);
+    return x;
+  }
+  function isoDay(d) {
+    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+  }
+  function parseDay(s) { var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null; }
+  // weights : [{date 'yyyy-mm-dd', kg}] ; renvoie moyennes par semaine et éventuelle proposition.
+  function weightTrend(weights, objectif, kcal) {
+    var byWeek = {};
+    (weights || []).forEach(function (w) {
+      var d = parseDay(w.date), kg = num(w.kg);
+      if (!d || !kg) return;
+      var k = isoDay(mondayOf(d));
+      (byWeek[k] = byWeek[k] || []).push(kg);
+    });
+    var weeks = Object.keys(byWeek).sort().map(function (k) {
+      var a = byWeek[k]; return { week: k, avg: a.reduce(function (s, x) { return s + x; }, 0) / a.length, n: a.length };
+    });
+    var res = { weeks: weeks, rate: null, suggestion: null };
+    if (weeks.length < 3) return res;
+    var last = weeks[weeks.length - 1], ref = weeks[weeks.length - 3];
+    var nWeeks = (parseDay(last.week) - parseDay(ref.week)) / (7 * 864e5);
+    if (nWeeks < 2) return res;
+    var rate = (last.avg - ref.avg) / ref.avg / nWeeks * 100; // % du poids par semaine
+    res.rate = round(rate, 2);
+    var goal = norm(objectif) || 'maintien', delta = 0, why = '';
+    if (goal === 'seche') {
+      if (rate > -0.25) { delta = -100; why = 'Le poids baisse moins de 0,25 % par semaine.'; }
+      else if (rate < -1) { delta = 100; why = 'Le poids baisse de plus de 1 % par semaine (trop rapide).'; }
+    } else if (goal === 'masse') {
+      if (rate < 0.1) { delta = 100; why = 'Le poids monte moins de 0,1 % par semaine.'; }
+      else if (rate > 0.5) { delta = -100; why = 'Le poids monte de plus de 0,5 % par semaine (trop rapide).'; }
+    } else if (Math.abs(rate) > 0.5) {
+      delta = rate > 0 ? -100 : 100; why = 'Le poids varie de plus de 0,5 % par semaine.';
+    }
+    if (delta && num(kcal)) res.suggestion = { delta: delta, kcal: num(kcal) + delta, why: why };
+    return res;
+  }
+
+  /* ---------- Paquets et prix par magasin ---------- */
+  // offers : [{ ing, magasin, pack (g), prix (€ le paquet) }]
+  function bestOffer(name, offers) {
+    var best = null;
+    (offers || []).forEach(function (o) {
+      if (o.ing !== name) return;
+      var pack = num(o.pack), prix = num(o.prix);
+      if (!pack || pack <= 0 || prix === null) return;
+      var perKg = prix / pack * 1000;
+      if (!best || perKg < best.perKg) best = { magasin: o.magasin, pack: pack, prix: prix, perKg: perKg };
+    });
+    return best;
+  }
+  function priceLine(name, buy, ing, offers) {
+    var o = bestOffer(name, offers);
+    if (buy <= 0) return { buy: 0, cost: 0, packs: 0, offer: o };
+    if (o) {
+      var packs = Math.ceil(buy / o.pack - 1e-9);
+      return { buy: buy, packs: packs, packSize: o.pack, bought: packs * o.pack, cost: packs * o.prix, magasin: o.magasin, offer: o };
+    }
+    var prix = ing ? num(ing.prix) : null;
+    return { buy: buy, packs: null, bought: buy, cost: prix === null ? null : buy / 1000 * prix, magasin: ing ? ing.magasin : '' };
+  }
+
+  /* ---------- Repas d'un membre (utilisé aussi par le serveur) ----------
+     row : { recipe, kcal, version: [{name, qty}] (par portion) } */
+  function mealItems(row, recipe, idx, prof) {
+    if (row.version && row.version.length) {
+      return { items: row.version.map(function (v) { return { name: v.name, qty: num(v.qty) || 0 }; }), status: 'variant', messages: [] };
+    }
+    var repas = (prof && num(prof.repas)) || 3;
+    var kcal = num(row.kcal) || (prof && num(prof.kcal) ? num(prof.kcal) / repas : null);
+    var a = adjust(recipe, idx, { kcal: kcal, protRef: prof && num(prof.prot) ? num(prof.prot) / repas : null,
+      margin: ((prof && num(prof.marge)) || 10) / 100 });
+    return { items: a.items.map(function (it) { return { name: it.name, qty: it.qty }; }), status: a.status, messages: a.messages, kcal: a.totals.kcal };
+  }
+
+  // Besoins totaux (g) à partir des repas du foyer : meals [{ items:[{name, qty}], cooked, reste }]
+  function needsFromMeals(meals) {
+    var need = {};
+    meals.forEach(function (m) {
+      if (m.cooked || m.reste) return;
+      m.items.forEach(function (it) { need[it.name] = (need[it.name] || 0) + (num(it.qty) || 0); });
+    });
+    return need;
+  }
+  // Liste de courses du foyer : besoins, stock, paquets, prix.
+  function foyerList(need, idx, opts) {
+    opts = opts || {};
+    var lines = [], total = 0, missingPrice = [];
+    Object.keys(need).forEach(function (name) {
+      var ing = find(idx, name);
+      var have = opts.useStock && opts.stock ? (num(opts.stock[name]) || 0) : 0;
+      var buy = Math.max(0, need[name] - have);
+      var pl = priceLine(name, buy, ing, opts.offers);
+      if (buy > 0 && pl.cost === null) missingPrice.push(name);
+      if (pl.cost) total += pl.cost;
+      lines.push({ name: name, need: need[name], stock: have, buy: buy, packs: pl.packs, packSize: pl.packSize,
+        bought: pl.bought || 0, cost: buy > 0 ? pl.cost : 0, magasin: pl.magasin || '', rayon: ing ? rayonOf(ing) : 'autre' });
+    });
+    lines.sort(function (a, b) { return RAYONS.indexOf(a.rayon) - RAYONS.indexOf(b.rayon) || a.name.localeCompare(b.name, 'fr'); });
+    return { lines: lines, total: total, missingPrice: missingPrice };
+  }
+
+  /* ---------- Exclusions (allergies, ingrédients) ---------- */
+  function splitList(s) {
+    if (Array.isArray(s)) return s;
+    return String(s || '').split(/[;,]/).map(function (x) { return x.trim(); }).filter(Boolean);
+  }
+  function excludedBy(recipe, idx, prof) {
+    if (!prof) return null;
+    var alls = splitList(prof.allergies).map(norm), ings = splitList(prof.exclus).map(norm);
+    if (!alls.length && !ings.length) return null;
+    for (var i = 0; i < recipe.lines.length; i++) {
+      var l = recipe.lines[i], ing = find(idx, l.ing);
+      if (ings.indexOf(norm(l.ing)) >= 0) return l.ing;
+      if (ing) {
+        var tags = splitList(ing.allergenes).map(norm);
+        for (var j = 0; j < tags.length; j++) if (alls.indexOf(tags[j]) >= 0) return l.ing + ' (' + tags[j] + ')';
+      }
+    }
+    return null;
+  }
+
+  /* ---------- Semaine proposée automatiquement ---------- */
+  // opts : { meals: nombre de repas, avis: {recette: {fav, note}}, exclude: fn(recipe)->bool, ok: fn(recipe)->bool, seed }
+  function autoPlan(recipes, opts) {
+    var n = Math.max(1, Math.min(42, num(opts.meals) || 14));
+    var seed = opts.seed || 1;
+    var rnd = function () { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+    var pool = recipes.filter(function (r) { return !(opts.exclude && opts.exclude(r)) && (!opts.ok || opts.ok(r)); });
+    if (!pool.length) return [];
+    var scored = pool.map(function (r) {
+      var a = (opts.avis || {})[r.name] || {};
+      var s = 1 + (a.fav ? 2 : 0) + (num(a.note) ? (num(a.note) - 3) * 0.5 : 0) + (num(a.avg) ? (num(a.avg) - 3) * 0.3 : 0);
+      return { r: r, w: Math.max(0.2, s) };
+    });
+    var maxEach = Math.max(2, Math.ceil(n / Math.min(pool.length, 5)));
+    var count = {}, out = [];
+    for (var i = 0; i < n; i++) {
+      var avail = scored.filter(function (x) { return (count[x.r.name] || 0) < maxEach; });
+      if (!avail.length) avail = scored;
+      var tot = avail.reduce(function (s, x) { return s + x.w; }, 0), t = rnd() * tot, pick = avail[0];
+      for (var j = 0; j < avail.length; j++) { t -= avail[j].w; if (t <= 0) { pick = avail[j]; break; } }
+      count[pick.r.name] = (count[pick.r.name] || 0) + 1;
+      out.push(pick.r.name);
+    }
+    return Object.keys(count).map(function (k) { return { recipe: k, meals: count[k] }; });
+  }
+
+  var api = { ROLES: ROLES, RAYONS: RAYONS, ALLERGENES: ALLERGENES, S_MIN: S_MIN, S_MAX: S_MAX, norm: norm, num: num, round: round,
     suggestRole: suggestRole, suggestRayon: suggestRayon, roleOf: roleOf, rayonOf: rayonOf,
     index: index, find: find, findLoose: findLoose, totals: totals, recipeTotals: recipeTotals,
     portionItems: portionItems, adjust: adjust, alternatives: alternatives, protStatus: protStatus,
+    replaceWith: replaceWith, replacementCandidates: replacementCandidates,
     isRaw: isRaw, cookPlan: cookPlan, parsePlan: parsePlan, matchRecipe: matchRecipe, parseStock: parseStock,
-    shoppingList: shoppingList, parseNutrition: parseNutrition, parsePrice: parsePrice };
+    shoppingList: shoppingList, parseNutrition: parseNutrition, parsePrice: parsePrice,
+    activityFactor: activityFactor, targets: targets, macroSplit: macroSplit, weightTrend: weightTrend,
+    mondayOf: mondayOf, isoDay: isoDay, parseDay: parseDay,
+    bestOffer: bestOffer, priceLine: priceLine, mealItems: mealItems, needsFromMeals: needsFromMeals, foyerList: foyerList,
+    splitList: splitList, excludedBy: excludedBy, autoPlan: autoPlan };
   root.Calc = api;
   if (typeof module !== 'undefined') module.exports = api;
-})(typeof window !== 'undefined' ? window : this);
+})(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

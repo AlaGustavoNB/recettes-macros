@@ -1,8 +1,9 @@
 /* Service worker : garde l'appli disponible hors ligne.
    Les données (recettes, liste) sont gardées par l'appli elle-même (localStorage). */
-var CACHE = 'recettes-v1.1.0';
-var FILES = ['./', 'index.html', 'style.css', 'store.js', 'calc.js', 'demo-data.js', 'api.js', 'app.js',
-  'guide.html', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
+var CACHE = 'recettes-v2.0.0';
+var FILES = ['./', 'index.html', 'style.css', 'store.js', 'calc.js', 'demo-data.js', 'demo-server.js', 'demo.js', 'api.js', 'app.js',
+  'screens-recettes.js', 'screens-semaine.js', 'screens-compte.js', 'screens-admin.js', 'guide.html', 'confidentialite.html',
+  'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(FILES); }).then(function () { return self.skipWaiting(); }));
