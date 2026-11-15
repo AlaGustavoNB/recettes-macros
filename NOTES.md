@@ -51,7 +51,7 @@ web/                   publié sur GitHub Pages (branche gh-pages)
   demo-data.js, demo.js, demo-server.js   mode démo
   guide.html, confidentialite.html
 tests/
-  tests.html           135 tests : calculs + serveur simulé (comptes, inscription, oubli, foyer,
+  tests.html           139 tests : calculs + serveur simulé (comptes, inscription, oubli, foyer,
                        planning, cuisine, avis, propositions, suppression, colonnes calculées intactes)
   audit.js             contrôle d'affichage mobile
 ```

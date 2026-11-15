@@ -81,8 +81,7 @@
         if (!navigator.onLine) { eanOut.innerHTML = '<div class="notice warn">Pas de réseau : la recherche du code-barres attendra. Tu peux saisir les valeurs à la main.</div>'; return; }
         eanOut.innerHTML = '<p class="muted">Recherche du produit ' + esc(code) + '…</p>';
         A.act('recherche d’un code-barres', async function () {
-          var res = await fetch('https://world.openfoodfacts.org/api/v2/product/' + code + '.json?fields=product_name,product_name_fr,brands,nutriments,quantity,allergens_tags');
-          var info = C.parseOFF(res.ok ? await res.json() : null);
+          var info = C.parseOFF(await fetchOFF(code));
           if (!info) { eanOut.innerHTML = '<div class="notice warn">Produit ' + esc(code) + ' inconnu d’Open Food Facts. Prends en photo le tableau nutritionnel ou saisis les valeurs.</div>'; return; }
           var setv = function (id, val) { if (val !== null && val !== undefined && val !== '') { $(id).value = typeof val === 'number' ? String(val).replace('.', ',') : val; $(id).classList.add('read'); } };
           if (!editing && !$('#f-name').value && info.name) setv('#f-name', info.name);
@@ -167,6 +166,25 @@
       }
     } };
   });
+
+  /* ---------- Fiche Open Food Facts : 2 serveurs directs, puis relais par le serveur Google ---------- */
+  var OFF_Q = '.json?fields=product_name,product_name_fr,brands,nutriments,quantity,allergens_tags';
+  async function fetchOFF(code) {
+    var hosts = ['https://world.openfoodfacts.org', 'https://fr.openfoodfacts.org'];
+    for (var i = 0; i < hosts.length; i++) {
+      var ctl = window.AbortController ? new AbortController() : null;
+      var timer = ctl ? setTimeout(function () { ctl.abort(); }, 9000) : null;
+      try {
+        var r = await fetch(hosts[i] + '/api/v2/product/' + code + OFF_Q, ctl ? { signal: ctl.signal } : {});
+        if (r.status === 404) return { status: 0 };
+        if (r.ok) return await r.json();
+      } catch (e) { /* serveur suivant */ }
+      finally { if (timer) clearTimeout(timer); }
+    }
+    try { return (await A.Api.call('barcode', { token: S.token, code: code }, { tries: 1 })).json; }
+    catch (e) { if (e.code === 'NON_CONNECTE') throw e; }
+    throw A.Api.ApiError('Open Food Facts ne répond pas pour le moment (code ' + code + ').', 'OFF');
+  }
 
   /* ---------- Lecture d'un code-barres sur une photo ----------
      Lecteur intégré du téléphone s'il existe (Android), sinon bibliothèque gratuite ZXing chargée à la demande. */

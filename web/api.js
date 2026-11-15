@@ -21,7 +21,7 @@
 
   // Erreurs « logiques » renvoyées par le serveur : inutile de réessayer.
   var NO_RETRY = { MDP_FAUX: 1, CODE_FAUX: 1, BLOQUE: 1, NON_AUTORISE: 1, NON_CONNECTE: 1, DOUBLON: 1, VALEUR: 1, INTROUVABLE: 1,
-    DECALE: 1, PLEIN: 1, PAS_DE_COMPTE: 1, INSCRIPTION_FERMEE: 1, DRIVE: 1, ACTION: 1, HORS_LIGNE: 1, ONGLET: 1 };
+    DECALE: 1, PLEIN: 1, PAS_DE_COMPTE: 1, INSCRIPTION_FERMEE: 1, DRIVE: 1, ACTION: 1, HORS_LIGNE: 1, ONGLET: 1, OFF: 1 };
   var NETWORK = { RESEAU: 1, HORS_LIGNE: 1, HTTP: 1, OCCUPE: 1 };
 
   async function call(action, payload, opts) {

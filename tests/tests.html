@@ -224,6 +224,13 @@ function runServerTests(code) {
     base64EncodeWebSafe: function (s) { return btoa(String(s)).replace(/\+/g, '-').replace(/\//g, '_'); },
     formatDate: function (d) { return d.toISOString().slice(0, 10); } };
   window.MailApp = { sendEmail: function (o) { mails.push(o); } };
+  var fetched = [];
+  window.UrlFetchApp = { fetch: function (url) {
+    fetched.push(url);
+    var world = url.indexOf('world.') >= 0, known = url.indexOf('3017620422003') >= 0;
+    return { getResponseCode: function () { return world ? 503 : (known ? 200 : 404); },
+      getContentText: function () { return JSON.stringify({ status: 1, product: { product_name: 'Nutella', nutriments: { 'energy-kcal_100g': 539, proteins_100g: 6.3 } } }); } };
+  } };
   window.ContentService = { MimeType: { JSON: 'json' }, createTextOutput: function (s) { return { s: s, setMimeType: function () { return this; } }; } };
   window.Session = { getScriptTimeZone: function () { return 'Europe/Paris'; } };
   window.Logger = { log: function () {} };
@@ -257,6 +264,13 @@ function runServerTests(code) {
   for (var i = 0; i < 5; i++) call({ action: 'login', id: 'marine', password: 'nope' });
   ok(call({ action: 'login', id: 'marine', password: 'secret-marine' }).code === 'BLOQUE' && call({ action: 'login', id: 'nacim', password: 'motdepasse1' }).ok, 'Serveur : blocage après 5 essais, seulement ce compte');
   cache = {};
+
+  /* Code-barres relayé par le serveur */
+  var bc = call({ action: 'barcode', token: tk, code: '3017620422003' });
+  ok(bc.ok && bc.json.product.product_name === 'Nutella' && fetched.length === 2, 'Code-barres via le serveur : 2e serveur Open Food Facts si le 1er est en panne', fetched);
+  ok(call({ action: 'barcode', token: tk, code: '3017620422003' }).ok && fetched.length === 2, 'Code-barres via le serveur : réponse gardée en cache');
+  ok(call({ action: 'barcode', token: tk, code: '3017620422004' }).code === 'VALEUR' && call({ action: 'barcode', code: '3017620422003' }).code === 'NON_CONNECTE', 'Code-barres via le serveur : code faux refusé, connexion exigée');
+  ok(call({ action: 'barcode', token: tk, code: '96385074' }).json.status === 0, 'Code-barres via le serveur : produit inconnu signalé');
 
   /* Inscription */
   var acc = { id: 'paul', name: 'Paul', email: 'Paul@Exemple.fr', password: 'paul-12345', consent: true };

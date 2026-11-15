@@ -156,6 +156,7 @@ function handle_(req) {
         setAvis: function () { return withLock_(function () { return setAvis_(me, req.recipe, req.avis); }); },
         propose: function () { return withLock_(function () { return propose_(me, req.type, req.title, req.data); }); },
         photos: function () { return photos_(req.names); },
+        barcode: function () { return offLookup_(req.code); },
         ocr: function () { checkOcrQuota_(me); return ocr_(req.image, req.mime); }
       };
       if (USER[action]) out = USER[action]();
@@ -1121,6 +1122,32 @@ function deleteLine_(rowNum, recipe, ing) {
   var s = sheet_(TABS.LIG), r = checkLine_(s, rowNum, recipe, ing);
   s.getRange(r, 1, 1, 3).clearContent(); // les formules D–I restent en place
   return { row: r };
+}
+
+/* ===================== Code-barres : relais vers Open Food Facts ===================== */
+// Utilisé quand le téléphone n'arrive pas à joindre Open Food Facts directement.
+// Seul le numéro du code-barres est envoyé ; réponse gardée 6 h en cache.
+var OFF_FIELDS = 'product_name,product_name_fr,brands,nutriments,quantity,allergens_tags';
+function offLookup_(code) {
+  code = String(code || '').replace(/\D/g, '');
+  if (!Calc.validEan(code)) throw err_('VALEUR', 'Code-barres non valide.');
+  var cache = CacheService.getScriptCache(), key = 'off:' + code, hit = cache.get(key);
+  if (hit) return { json: JSON.parse(hit) };
+  var hosts = ['https://world.openfoodfacts.org', 'https://fr.openfoodfacts.org'];
+  for (var i = 0; i < hosts.length; i++) {
+    try {
+      var res = UrlFetchApp.fetch(hosts[i] + '/api/v2/product/' + code + '.json?fields=' + OFF_FIELDS,
+        { muteHttpExceptions: true, headers: { 'User-Agent': 'LaJusteAssiette/2 (appli personnelle de recettes)' } });
+      var st = res.getResponseCode();
+      if (st === 404) return { json: { status: 0 } };
+      if (st === 200) {
+        var txt = res.getContentText();
+        try { cache.put(key, txt, 21600); } catch (e) { /* réponse trop grande pour le cache */ }
+        return { json: JSON.parse(txt) };
+      }
+    } catch (e) { /* serveur suivant */ }
+  }
+  throw err_('OFF', 'Open Food Facts ne répond pas pour le moment.');
 }
 
 /* ===================== Lecture de photo (OCR Google Drive, gratuit) ===================== */
