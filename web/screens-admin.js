@@ -26,7 +26,8 @@
       (!admin ? '<p class="muted">' + (forRecipe ? 'Il sera ajouté à ta proposition de recette.' : 'L’admin le vérifiera avant de l’ajouter.') + '</p>' : '') +
       '<div class="panel"><div class="panel-title">Code-barres du produit</div>' +
       '<p class="muted small">Les valeurs pour 100 g viennent d’Open Food Facts (base gratuite et collaborative) : elles s’affichent surlignées, corrige-les si besoin.</p>' +
-      '<label class="btn primary big file"><input type="file" accept="image/*" capture="environment" id="f-barcode">▥ Scanner le code-barres</label>' +
+      '<button class="btn primary big" id="f-scan">▥ Scanner le code-barres</button>' +
+      '<label class="linkbtn file-link"><input type="file" accept="image/*" capture="environment" id="f-barcode">Le scan ne marche pas ? Prends une photo du code-barres</label>' +
       '<div class="row"><input id="f-ean" inputmode="numeric" autocomplete="off" placeholder="ou tape les chiffres sous le code" aria-label="Numéro du code-barres">' +
       '<button class="btn" id="f-ean-go">Chercher</button></div><div id="ean-out"></div></div>' +
       (editing ? '' : '<div class="panel"><div class="panel-title">Ou photo du tableau nutritionnel</div>' +
@@ -100,6 +101,12 @@
       };
       $('#f-ean-go', el).onclick = function () { lookup($('#f-ean').value); };
       $('#f-ean', el).onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); lookup($('#f-ean').value); } };
+      $('#f-scan', el).onclick = function () {
+        A.act('scan d’un code-barres', async function () {
+          var code = await scanLive();
+          if (code) lookup(code);
+        }, false);
+      };
       $('#f-barcode', el).onchange = function (e) {
         var f = e.target.files[0]; e.target.value = ''; if (!f) return;
         eanOut.innerHTML = '<p class="muted">Lecture du code-barres…</p>';
@@ -194,6 +201,106 @@
     } finally { URL.revokeObjectURL(url); }
   }
   A.readBarcode = readBarcode;
+
+  /* ---------- Scan en direct : caméra + cadre, détection continue ----------
+     Le code doit être lu deux fois de suite à l'identique (évite les erreurs de lecture). */
+  function scanLive() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return Promise.reject(A.Api.ApiError('La caméra n’est pas accessible depuis ce navigateur. Utilise « Prends une photo du code-barres » ou tape les chiffres.', 'CAMERA'));
+    }
+    return new Promise(function (resolve, reject) {
+      var ov = document.createElement('div');
+      ov.className = 'scan'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-label', 'Scanner un code-barres');
+      ov.innerHTML = '<video playsinline muted autoplay></video>' +
+        '<div class="scan-frame" aria-hidden="true"><i></i></div>' +
+        '<p class="scan-hint">Place le code-barres dans le cadre</p>' +
+        '<div class="scan-actions"><button class="btn" data-s="torch" hidden>💡 Lampe</button><button class="btn" data-s="close">Annuler</button></div>';
+      document.body.appendChild(ov);
+      var video = ov.querySelector('video'), hint = ov.querySelector('.scan-hint');
+      var stream = null, timer = null, done = false, last = '', torchOn = false;
+      var canvas = document.createElement('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
+      var det = null, Z = null, reader = null;
+      function cleanup() {
+        done = true; clearTimeout(timer);
+        if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+        ov.remove(); document.removeEventListener('keydown', onKey);
+      }
+      function finish(code) { cleanup(); resolve(code); }
+      function onKey(e) { if (e.key === 'Escape') finish(null); }
+      document.addEventListener('keydown', onKey);
+      ov.querySelector('[data-s="close"]').onclick = function () { finish(null); };
+      var torchBtn = ov.querySelector('[data-s="torch"]');
+      async function decodeFrame() {
+        var vw = video.videoWidth, vh = video.videoHeight;
+        if (!vw || !vh) return null;
+        // Zone centrale (là où est le cadre) : plus rapide et évite les autres codes.
+        var cw = Math.round(vw * 0.86), ch = Math.round(vh * 0.5);
+        canvas.width = cw; canvas.height = ch;
+        ctx.drawImage(video, (vw - cw) / 2, (vh - ch) / 2, cw, ch, 0, 0, cw, ch);
+        if (det) {
+          var found = await det.detect(canvas);
+          return found && found.length ? found[0].rawValue : null;
+        }
+        try {
+          var lum = new Z.HTMLCanvasElementLuminanceSource(canvas);
+          var res = reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(lum)));
+          return res && res.getText();
+        } catch (e) { return null; }
+      }
+      async function loop() {
+        if (done) return;
+        try {
+          var code = await decodeFrame();
+          if (code && C.validEan(code)) {
+            if (code === last) {
+              if (navigator.vibrate) navigator.vibrate(120);
+              finish(code); return;
+            }
+            last = code; hint.textContent = 'Code repéré, ne bouge pas…';
+          }
+        } catch (e) { /* image suivante */ }
+        timer = setTimeout(loop, 120);
+      }
+      (async function start() {
+        try {
+          if ('BarcodeDetector' in window) {
+            try {
+              var formats = await window.BarcodeDetector.getSupportedFormats();
+              if (formats.indexOf('ean_13') >= 0) det = new window.BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e'] });
+            } catch (e) { det = null; }
+          }
+          if (!det) {
+            hint.textContent = 'Préparation du lecteur…';
+            Z = await loadZxing();
+            var hints = new Map();
+            hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.UPC_E]);
+            hints.set(Z.DecodeHintType.TRY_HARDER, true);
+            reader = new Z.MultiFormatReader(); reader.setHints(hints);
+          }
+          stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+            video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+          if (done) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+          video.srcObject = stream;
+          await video.play();
+          hint.textContent = 'Place le code-barres dans le cadre';
+          var track = stream.getVideoTracks()[0];
+          var caps = track && track.getCapabilities ? track.getCapabilities() : {};
+          if (caps.torch) {
+            torchBtn.hidden = false;
+            torchBtn.onclick = function () { torchOn = !torchOn; track.applyConstraints({ advanced: [{ torch: torchOn }] }).catch(function () {}); };
+          }
+          loop();
+        } catch (e) {
+          cleanup();
+          var denied = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+          reject(e && e.code ? e : A.Api.ApiError(denied
+            ? 'Accès à la caméra refusé. Autorise la caméra pour ce site (réglages du navigateur), ou prends une photo du code-barres.'
+            : 'Caméra indisponible (' + (e && e.name || e) + '). Prends une photo du code-barres ou tape les chiffres.', 'CAMERA'));
+        }
+      })();
+    });
+  }
+  A.scanLive = scanLive;
 
   /* ================= Recette : nouvelle (admin) ou proposée (autres) ================= */
   A.route(/^#\/proposer$/, function () {
