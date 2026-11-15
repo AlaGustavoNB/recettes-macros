@@ -2,7 +2,7 @@
    Les écrans sont dans screens-*.js (ils s'enregistrent avec App.route). */
 (function () {
   'use strict';
-  var VERSION = '2.5.0';
+  var VERSION = '2.5.1';
   var C = window.Calc, Store = window.Store, Api = window.Api, Sync = Api.Sync;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
@@ -329,7 +329,9 @@
     DOUBLON: 'Utilise l’élément existant ou choisis un autre nom.',
     DRIVE: 'Dans Apps Script : Services > + > Drive API > Ajouter, puis redéploie. Tu peux aussi saisir les valeurs à la main.',
     ONGLET: 'Dans le Sheet : menu Appli recettes > 1. Installer / vérifier.',
-    PLEIN: 'Dans le Sheet, recopie la dernière ligne de formules vers le bas pour ajouter des lignes.'
+    PLEIN: 'Dans le Sheet, recopie la dernière ligne de formules vers le bas pour ajouter des lignes.',
+    OFF: 'La base gratuite Open Food Facts est parfois surchargée. Réessaie dans un instant (le code est gardé), prends en photo le tableau nutritionnel, ou saisis les valeurs à la main.',
+    CAMERA: 'Utilise « Prends une photo du code-barres » juste en dessous, ou tape les chiffres.'
   };
   function scrub(s) {
     return String(s == null ? '' : s)
