@@ -13,30 +13,34 @@
   A.route(/^#\/ingredient\/(.+)$/, function (key) {
     var admin = A.isAdmin();
     var forRecipe = key === 'pour-recette';
-    var editing = admin && ['nouveau', 'photo', 'pour-recette'].indexOf(key) < 0 ? C.find(S.idx, key) : null;
-    if (!admin && !forRecipe && key !== 'nouveau' && key !== 'photo') return A.redirect('#/plus');
+    var editing = admin && ['nouveau', 'photo', 'pour-recette', 'corriger'].indexOf(key) < 0 ? C.find(S.idx, key) : null;
+    // Correction proposée par un client sur un ingrédient existant (validée par l'admin).
+    var corr = !admin && key === 'corriger' ? C.find(S.idx, Store.get('ingCorr', '')) : null;
+    if (key === 'corriger' && !corr) return A.redirect('#/ingredient/nouveau');
+    if (!admin && !forRecipe && key !== 'nouveau' && key !== 'photo' && !corr) return A.redirect('#/plus');
+    var fixed = editing || corr; // ingrédient déjà dans la base : nom figé
     var draft = Store.get('ingDraft', null);
-    var v = editing ? Object.assign({}, editing) : (draft || { etat: 'Cru', source: '' });
+    var v = fixed ? Object.assign({}, fixed) : (draft || { etat: 'Cru', source: '' });
     var opt = function (list, cur) { return list.map(function (r) { return '<option' + (r === cur ? ' selected' : '') + '>' + r + '</option>'; }).join(''); };
     var role = v.role || C.suggestRole(v), rayon = v.rayon || C.suggestRayon(role);
     var tags = C.splitList(v.allergenes).map(C.norm);
     var back = forRecipe ? '#/proposer' : (admin ? '#/gestion' : '#/plus');
     var html = '<section class="screen"><a class="back" href="' + back + '">‹ Retour</a>' +
-      '<h1>' + (editing ? 'Modifier un ingrédient' : (admin ? 'Nouvel ingrédient' : 'Proposer un ingrédient')) + '</h1>' +
-      (!admin ? '<p class="muted">' + (forRecipe ? 'Il sera ajouté à ta proposition de recette.' : 'L’admin le vérifiera avant de l’ajouter.') + '</p>' : '') +
+      '<h1>' + (editing ? 'Modifier un ingrédient' : corr ? 'Corriger un ingrédient' : (admin ? 'Nouvel ingrédient' : 'Proposer un ingrédient')) + '</h1>' +
+      (!admin ? '<p class="muted">' + (corr ? 'Corrige les valeurs fausses : l’admin validera ta correction.' : forRecipe ? 'Il sera ajouté à ta proposition de recette.' : 'L’admin le vérifiera avant de l’ajouter.') + '</p>' : '') +
       '<div class="panel"><div class="panel-title">Code-barres du produit</div>' +
       '<p class="muted small">Les valeurs pour 100 g viennent d’Open Food Facts (base gratuite et collaborative) : elles s’affichent surlignées, corrige-les si besoin.</p>' +
       '<button class="btn primary big" id="f-scan">▥ Scanner le code-barres</button>' +
       '<label class="linkbtn file-link"><input type="file" accept="image/*" capture="environment" id="f-barcode">Le scan ne marche pas ? Prends une photo du code-barres</label>' +
       '<div class="row"><input id="f-ean" inputmode="numeric" autocomplete="off" placeholder="ou tape les chiffres sous le code" aria-label="Numéro du code-barres">' +
       '<button class="btn" id="f-ean-go">Chercher</button></div><div id="ean-out"></div></div>' +
-      (editing ? '' : '<div class="panel"><div class="panel-title">Ou photo du tableau nutritionnel</div>' +
+      (fixed ? '' : '<div class="panel"><div class="panel-title">Ou photo du tableau nutritionnel</div>' +
         '<p class="muted small">La photo est lue par Google (gratuit) puis supprimée. Rien n’est enregistré sans ta validation.</p>' +
         '<label class="btn big file"><input type="file" accept="image/*" capture="environment" id="f-photo">📷 Prendre la photo</label>' +
         '<div id="ocr-out"></div></div>') +
       '<div id="dup"></div>' +
-      A.field('Nom (avec cru/cuit)', '<input id="f-name" value="' + esc(v.name || '') + '"' + (editing ? ' readonly' : '') + ' autocomplete="off">',
-        editing ? 'Le nom ne se change pas ici (il est utilisé dans les recettes).' : 'Ex. « Riz basmati cru ». Doit être identique partout.') +
+      A.field('Nom (avec cru/cuit)', '<input id="f-name" value="' + esc(v.name || '') + '"' + (fixed ? ' readonly' : '') + ' autocomplete="off">',
+        fixed ? 'Le nom ne se change pas ici (il est utilisé dans les recettes).' : 'Ex. « Riz basmati cru ». Doit être identique partout.') +
       A.field('État', '<select id="f-etat">' + opt(['Cru', 'Cuit', 'Autre'], v.etat) + '</select>') +
       '<div class="grid2">' +
       A.field('kcal / 100 g', A.numIn('f-kcal', v.kcal)) + A.field('Protéines / 100 g', A.numIn('f-p', v.p)) +
@@ -51,7 +55,7 @@
       '<fieldset class="panel"><legend class="panel-title">Allergènes</legend><div class="checks">' + C.ALLERGENES.map(function (a) {
         return '<label class="toggle"><input type="checkbox" data-alg="' + esc(a) + '"' + (tags.indexOf(C.norm(a)) >= 0 ? ' checked' : '') + '> ' + esc(a) + '</label>';
       }).join('') + '</div></fieldset>' +
-      '<button class="btn primary big" id="f-save">' + (editing ? 'Enregistrer' : admin ? 'Valider et enregistrer dans le Sheet' : forRecipe ? 'Ajouter à ma recette' : 'Envoyer à l’admin') + '</button></section>';
+      '<button class="btn primary big" id="f-save">' + (editing ? 'Enregistrer' : corr ? 'Envoyer la correction à l’admin' : admin ? 'Valider et enregistrer dans le Sheet' : forRecipe ? 'Ajouter à ma recette' : 'Envoyer à l’admin') + '</button></section>';
     return { tab: 'plus', html: html, bind: function (el) {
       var read = function () {
         return { name: $('#f-name').value.trim(), etat: $('#f-etat').value, kcal: C.num($('#f-kcal').value), p: C.num($('#f-p').value),
@@ -61,12 +65,12 @@
           allergenes: $$('[data-alg]', el).filter(function (c) { return c.checked; }).map(function (c) { return c.getAttribute('data-alg'); }).join(', ') };
       };
       var checkDup = function () {
-        if (editing) return;
+        if (fixed) return;
         var n = $('#f-name').value.trim(), ex = n && C.findLoose(S.idx, n);
         $('#dup').innerHTML = ex ? '<div class="notice warn">Cet ingrédient existe déjà : <b>' + esc(ex.name) + '</b>.' + (admin ? ' <a href="#/ingredient/' + enc(ex.name) + '">Le modifier</a> au lieu d’en créer un doublon.' : ' Utilise-le tel quel.') + '</div>' : '';
       };
       $('#f-name').oninput = checkDup; checkDup();
-      if (!editing) $$('input,select', el).forEach(function (i) { i.addEventListener('change', function () { Store.set('ingDraft', read()); }); });
+      if (!fixed) $$('input,select', el).forEach(function (i) { i.addEventListener('change', function () { Store.set('ingDraft', read()); }); });
       ['#f-kcal', '#f-p', '#f-g', '#f-l'].forEach(function (s) {
         $(s).addEventListener('change', function () { if (v.role) return; var r = C.suggestRole(read()); $('#f-role').value = r; $('#f-rayon').value = C.suggestRayon(r); });
       });
@@ -78,13 +82,14 @@
         code = String(code || '').replace(/\D/g, '');
         if (!C.validEan(code)) { eanOut.innerHTML = '<div class="notice warn">Code-barres non valide (' + esc(code || 'vide') + '). Vérifie les chiffres.</div>'; return; }
         $('#f-ean').value = code;
+        if (!fixed) { var known = byCode(code); if (known) { showKnown(known); return; } }
         if (!navigator.onLine) { eanOut.innerHTML = '<div class="notice warn">Pas de réseau : la recherche du code-barres attendra. Tu peux saisir les valeurs à la main.</div>'; return; }
         eanOut.innerHTML = '<p class="muted">Recherche du produit ' + esc(code) + '…</p>';
         A.act('recherche d’un code-barres', async function () {
           var info = C.parseOFF(await fetchOFF(code));
           if (!info) { eanOut.innerHTML = '<div class="notice warn">Produit ' + esc(code) + ' inconnu d’Open Food Facts. Prends en photo le tableau nutritionnel ou saisis les valeurs.</div>'; return; }
           var setv = function (id, val) { if (val !== null && val !== undefined && val !== '') { $(id).value = typeof val === 'number' ? String(val).replace('.', ',') : val; $(id).classList.add('read'); } };
-          if (!editing && !$('#f-name').value && info.name) setv('#f-name', info.name);
+          if (!fixed && !$('#f-name').value && info.name) setv('#f-name', info.name);
           setv('#f-kcal', info.kcal); setv('#f-p', info.p); setv('#f-g', info.g); setv('#f-l', info.l); setv('#f-f', info.f);
           $('#f-src').value = 'Open Food Facts (code ' + code + ')';
           info.allergenes.forEach(function (a) { var cb = $('[data-alg="' + a + '"]', el); if (cb) cb.checked = true; });
@@ -92,20 +97,46 @@
           var miss = ['kcal', 'p', 'g', 'l', 'f'].filter(function (k) { return info[k] === null; })
             .map(function (k) { return { kcal: 'kcal', p: 'protéines', g: 'glucides', l: 'lipides', f: 'fibres' }[k]; });
           eanOut.innerHTML = '<div class="notice">Trouvé : <b>' + esc(info.name || code) + '</b>' + (info.quantity ? ' (' + esc(info.quantity) + ')' : '') +
-            '. Valeurs pour 100 g surlignées : <b>vérifie et corrige si besoin</b>.' + (editing ? '' : ' Ajoute « cru » ou « cuit » au nom si utile.') +
+            '. Valeurs pour 100 g surlignées : <b>vérifie et corrige si besoin</b>.' + (fixed ? '' : ' Ajoute « cru » ou « cuit » au nom si utile.') +
             (miss.length ? '<br><span class="warn-text">Absent de la fiche : ' + miss.join(', ') + '. À saisir.</span>' : '') +
             (info.allergenes.length ? '<br>Allergènes cochés : ' + esc(info.allergenes.join(', ')) + '.' : '') + '</div>';
-          checkDup(); if (!editing) Store.set('ingDraft', read());
+          checkDup(); if (!fixed) Store.set('ingDraft', read());
         });
       };
-      $('#f-ean-go', el).onclick = function () { lookup($('#f-ean').value); };
-      $('#f-ean', el).onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); lookup($('#f-ean').value); } };
-      $('#f-scan', el).onclick = function () {
+      // Article déjà scanné : on le reconnaît à son code-barres (gardé dans « Source macros »).
+      function byCode(code) {
+        return (S.data.ingredients || []).filter(function (i) { var m = String(i.source || '').match(/code (\d{8,14})/); return m && m[1] === code; })[0] || null;
+      }
+      function resetForm() {
+        Store.del('ingDraft');
+        $$('input:not([type=file]):not([type=checkbox])', $('.screen', el)).forEach(function (i) { if (i.id !== 'f-ean') i.value = ''; i.classList.remove('read'); });
+        $$('[data-alg]', el).forEach(function (c) { c.checked = false; });
+        $('#f-etat').value = 'Cru'; $('#dup').innerHTML = ''; $('#f-ean').value = '';
+      }
+      function startScan() {
         A.act('scan d’un code-barres', async function () {
           var code = await scanLive();
           if (code) lookup(code);
         }, false);
-      };
+      }
+      function showKnown(ex) {
+        if (navigator.vibrate) navigator.vibrate([60, 60, 60]);
+        eanOut.innerHTML = '<div class="notice known" role="alert"><b>Déjà scanné :</b> ' + esc(ex.name) +
+          '<div class="small">Pour 100 g : ' + fmt(ex.kcal) + ' kcal · P ' + fmt(ex.p, 1) + ' · G ' + fmt(ex.g, 1) + ' · L ' + fmt(ex.l, 1) + ' · F ' + fmt(ex.f, 1) + '</div>' +
+          '<p class="small">Les macros sont justes ? Passe à l’article suivant. Sinon, corrige-les.</p>' +
+          '<div class="row wrap"><button class="btn primary" id="known-next">Suivant ▸</button><button class="btn" id="known-fix">Corriger les macros</button></div></div>';
+        eanOut.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        $('#known-next', el).onclick = function () { resetForm(); eanOut.innerHTML = ''; startScan(); };
+        $('#known-fix', el).onclick = function () {
+          Store.del('ingDraft');
+          Store.set('fromScan', true);
+          if (admin) A.go('#/ingredient/' + enc(ex.name));
+          else { Store.set('ingCorr', ex.name); A.go('#/ingredient/corriger'); }
+        };
+      }
+      $('#f-ean-go', el).onclick = function () { lookup($('#f-ean').value); };
+      $('#f-ean', el).onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); lookup($('#f-ean').value); } };
+      $('#f-scan', el).onclick = startScan;
       $('#f-barcode', el).onchange = function (e) {
         var f = e.target.files[0]; e.target.value = ''; if (!f) return;
         eanOut.innerHTML = '<p class="muted">Lecture du code-barres…</p>';
@@ -122,17 +153,25 @@
         var kc = 4 * ing.p + 4 * ing.g + 9 * ing.l;
         if (ing.kcal > 0 && Math.abs(kc - ing.kcal) / ing.kcal > 0.2 && kc > 20 &&
           !confirm('Attention : 4×P + 4×G + 9×L = ' + Math.round(kc) + ' kcal, loin des ' + ing.kcal + ' kcal saisies. Une virgule mal lue ? Continuer quand même ?')) return;
-        if (!editing && C.findLoose(S.idx, ing.name)) { A.toast('Cet ingrédient existe déjà.'); return; }
+        if (!fixed && C.findLoose(S.idx, ing.name)) { A.toast('Cet ingrédient existe déjà.'); return; }
         if (forRecipe && !admin) {
           var list = propIngs().filter(function (x) { return C.norm(x.name) !== C.norm(ing.name); }).concat([ing]);
           Store.set(A.pk('propIngs'), list); Store.del('ingDraft'); A.toast('Ajouté : utilise-le dans ta recette'); A.go('#/proposer'); return;
+        }
+        if (corr) {
+          A.act('correction d’un ingrédient', async function () {
+            await A.Api.call('propose', { token: S.token, type: 'ingrédient', title: 'Correction : ' + corr.name, data: { ingredient: Object.assign(ing, { name: corr.name }), correction: true } });
+            Store.del('ingCorr'); await A.refreshStrict(); A.toast('Correction envoyée à l’admin. Merci !'); A.go('#/ingredient/nouveau');
+          });
+          return;
         }
         A.act(editing ? 'modification d’un ingrédient' : 'ajout d’un ingrédient', async function () {
           if (editing) await A.Api.call('updateIngredient', { token: S.token, row: editing.row, name: editing.name, ingredient: ing });
           else if (admin) await A.Api.call('addIngredient', { token: S.token, ingredient: ing });
           else await A.Api.call('propose', { token: S.token, type: 'ingrédient', title: ing.name, data: { ingredient: ing } });
           Store.del('ingDraft');
-          if (admin) { await A.refreshStrict(); A.toast('Enregistré dans le Sheet'); A.go(editing ? '#/ingredients' : (forRecipe ? '#/proposer' : '#/gestion')); }
+          var back2 = Store.get('fromScan', false); Store.del('fromScan');
+          if (admin) { await A.refreshStrict(); A.toast('Enregistré dans le Sheet'); A.go(back2 ? '#/ingredient/nouveau' : editing ? '#/ingredients' : (forRecipe ? '#/proposer' : '#/gestion')); }
           else { await A.refreshStrict(); A.toast('Ingrédient envoyé à l’admin. Merci !'); A.go('#/recettes'); }
         });
       };
@@ -526,6 +565,15 @@
           return esc(x.name) + ' — ' + fmt(x.kcal) + ' kcal, P ' + fmt(x.p, 1) + ', G ' + fmt(x.g, 1) + ', L ' + fmt(x.l, 1) + (C.num(x.prix) !== null ? ', ' + euro(x.prix) + '/kg' : ', prix manquant');
         }).join(' ; ') + '</p>' : '') +
         (d.recipe.steps && d.recipe.steps.length ? '<details><summary>Étapes</summary><ol>' + d.recipe.steps.map(function (s) { return '<li>' + esc(s.text) + (s.timer ? ' (' + s.timer + ' min)' : '') + '</li>'; }).join('') + '</ol></details>' : '');
+    } else if (p.type === 'ingrédient' && d.ingredient && d.correction) {
+      var cur = C.find(S.idx, d.ingredient.name) || {}, nx = d.ingredient;
+      var rowc = function (lab, k, dd) {
+        var changed = C.num(cur[k]) !== C.num(nx[k]);
+        return '<tr' + (changed ? ' class="chg"' : '') + '><td>' + lab + '</td><td>' + fmt(cur[k], dd) + '</td><td><b>' + fmt(nx[k], dd) + '</b></td></tr>';
+      };
+      body = '<p class="small"><b>Correction</b> de « ' + esc(nx.name) + ' » (pour 100 g) :</p><table class="qty"><thead><tr><th></th><th>Actuel</th><th>Proposé</th></tr></thead><tbody>' +
+        rowc('kcal', 'kcal', 0) + rowc('Protéines', 'p', 1) + rowc('Glucides', 'g', 1) + rowc('Lipides', 'l', 1) + rowc('Fibres', 'f', 1) +
+        '</tbody></table>' + (nx.role !== cur.role ? '<p class="small">Rôle : ' + esc(cur.role || '—') + ' → <b>' + esc(nx.role) + '</b></p>' : '');
     } else if (p.type === 'ingrédient' && d.ingredient) {
       var x = d.ingredient;
       body = '<p class="small">Pour 100 g : ' + fmt(x.kcal) + ' kcal, P ' + fmt(x.p, 1) + ', G ' + fmt(x.g, 1) + ', L ' + fmt(x.l, 1) + ', F ' + fmt(x.f, 1) +

@@ -369,12 +369,19 @@ function runServerTests(code) {
     'Nouvel ingrédient écrit ligne 6, prix jamais inventé', sheets['Ingrédients'].rows[5]);
   ok(sheets['Recettes'].cell(3, 1) === 'Skyr bowl' && sheets['Lignes_recette'].cell(6, 2) === 'Skyr nature' && sheets['Lignes_recette'].cell(7, 3) === 20, 'Recette écrite ligne 3, lignes en 6 et 7');
   ok(call({ action: 'data', token: ptk }).myProposals[0].statut === 'acceptée' && call({ action: 'decide', token: tk, n: 1, accept: true }).code === 'DECALE', 'Statut visible par l’auteur, pas de double validation');
+  var corrP = call({ action: 'propose', token: ptk, type: 'ingrédient', title: 'Correction : Brocoli cuit', data: { correction: true,
+    ingredient: { name: 'Brocoli cuit', etat: 'Cuit', kcal: 34, p: 2.9, g: 4.1, l: 0.4, f: 3.1, prix: 2.5, role: 'légume', rayon: 'légumes' } } });
+  writes.length = 0;
+  ok(corrP.ok && call({ action: 'decide', token: tk, n: corrP.n, accept: true }).ok && sheets['Ingrédients'].cell(4, 1) === 'Brocoli cuit' &&
+    sheets['Ingrédients'].cell(4, 3) === 34 && sheets['Ingrédients'].rows.filter(function (r) { return r[0] === 'Brocoli cuit'; }).length === 1,
+    'Correction de macros proposée puis validée : même ligne mise à jour, pas de doublon', sheets['Ingrédients'].rows[3]);
+  ok(call({ action: 'propose', token: tk, type: 'ingrédient', title: 'x', data: { correction: true, ingredient: { name: 'Inconnu', kcal: 1, p: 1, g: 1, l: 1 } } }).code === 'INTROUVABLE', 'Correction d’un ingrédient inexistant refusée');
   call({ action: 'propose', token: ptk, type: 'prix', title: 'Riz Lidl', data: { offer: { ing: 'Riz basmati cru', magasin: 'Lidl', pack: 1000, prix: 2.49 } } });
   call({ action: 'propose', token: ptk, type: 'photo', title: 'Photo', data: { recipe: EX, image: 'QUJDRA==' } });
-  call({ action: 'decide', token: tk, n: 2, accept: true }); call({ action: 'decide', token: tk, n: 3, accept: true });
+  call({ action: 'decide', token: tk, n: 3, accept: true }); call({ action: 'decide', token: tk, n: 4, accept: true });
   var d4 = call({ action: 'data', token: ctk });
   ok(d4.offers.length === 1 && d4.offers[0].pack === 1000 && d4.photos[0] === EX && call({ action: 'photos', token: ctk, names: [EX] }).photos[EX] === 'QUJDRA==', 'Prix magasin et photo validés');
-  ok(sheets['Propositions'].cell(4, 7).indexOf('QUJD') < 0, 'Photo validée : pas gardée en double dans Propositions');
+  ok(sheets['Propositions'].cell(5, 7).indexOf('QUJD') < 0, 'Photo validée : pas gardée en double dans Propositions');
   ok(call({ action: 'propose', token: tk, type: 'prix', title: 'x', data: { offer: { ing: 'Brocoli cuit', magasin: 'Lidl', pack: 450, prix: 1.99 } } }).applied === true, 'Proposition de l’admin appliquée directement');
   ok(call({ action: 'propose', token: tk, type: 'prix', title: 'Ticket', data: { offers: [{ ing: 'Riz basmati cru', magasin: 'Leclerc', pack: 500, prix: 1.6 }, { ing: "Huile d'olive", magasin: 'Leclerc', pack: 1000, prix: 7.9 }] } }).applied &&
     call({ action: 'data', token: tk }).offers.length === 4, 'Ticket de caisse : plusieurs prix en une proposition');
