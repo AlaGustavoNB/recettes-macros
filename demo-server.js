@@ -940,7 +940,15 @@ function applyProposal_(type, d, by) {
     });
     return addRecipe_(d.recipe);
   }
-  if (type === 'ingrédient') return addIngredient_(d.ingredient);
+  if (type === 'ingrédient') {
+    if (d.correction) { // correction des valeurs d'un ingrédient existant (le nom ne change pas)
+      var name = String(d.ingredient && d.ingredient.name || '');
+      var row = filled_(TABS.ING, 1).filter(function (r) { return s_(r[0]) === name; })[0];
+      if (!row) throw err_('INTROUVABLE', 'Ingrédient introuvable : ' + name);
+      return updateIngredient_(row.row, name, d.ingredient);
+    }
+    return addIngredient_(d.ingredient);
+  }
   if (type === 'prix') { (d.offers || [d.offer]).forEach(function (o) { upsertOffer_(o, by); }); return {}; }
   if (type === 'photo') return setPhoto_(d.recipe, d.image, by);
   throw err_('VALEUR', 'Type inconnu.');
