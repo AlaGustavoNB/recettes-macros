@@ -24,9 +24,25 @@
     DECALE: 1, PLEIN: 1, PAS_DE_COMPTE: 1, INSCRIPTION_FERMEE: 1, DRIVE: 1, ACTION: 1, HORS_LIGNE: 1, ONGLET: 1, OFF: 1 };
   var NETWORK = { RESEAU: 1, HORS_LIGNE: 1, HTTP: 1, OCCUPE: 1 };
 
+  // Le mode démo (≈ 70 Ko) n'est chargé que si on l'utilise : démarrage plus rapide pour tout le monde.
+  var demoLoading = null;
+  function loadDemo() {
+    if (root.Demo) return Promise.resolve();
+    if (demoLoading) return demoLoading;
+    demoLoading = ['demo-data.js', 'demo-server.js', 'demo.js'].reduce(function (p, src) {
+      return p.then(function () { return new Promise(function (res, rej) {
+        var s = document.createElement('script'); s.src = src; s.onload = res;
+        s.onerror = function () { demoLoading = null; rej(ApiError('Mode démo indisponible (réseau ?).', 'RESEAU')); };
+        document.head.appendChild(s);
+      }); });
+    }, Promise.resolve());
+    return demoLoading;
+  }
+
   async function call(action, payload, opts) {
     opts = opts || {};
     if (store.get('demo', false)) {
+      await loadDemo();
       try { return await root.Demo.call(action, payload || {}); }
       catch (r) { throw ApiError(r.error || 'Erreur (démo).', r.code || 'SERVEUR', r.code); }
     }
@@ -97,5 +113,5 @@
   root.addEventListener('online', function () { Sync.flush(); });
   setInterval(function () { if (Sync.queue().length && navigator.onLine) Sync.flush(); }, 30000);
 
-  root.Api = { call: call, apiUrl: apiUrl, ApiError: ApiError, Sync: Sync, NETWORK: NETWORK };
+  root.Api = { call: call, apiUrl: apiUrl, ApiError: ApiError, Sync: Sync, NETWORK: NETWORK, loadDemo: loadDemo };
 })(window);

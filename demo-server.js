@@ -24,7 +24,7 @@ window.makeDemoServer = function (env) {
 var TABS = {
   ING: 'Ingrédients', REC: 'Recettes', LIG: 'Lignes_recette', ETA: 'Étapes', STO: 'Stock cuisine',
   PRO: 'Profils', CPT: 'Comptes', FOY: 'Foyers', PLA: 'Plannings', CRS: 'Courses', POI: 'Poids',
-  AVI: 'Avis', PRP: 'Propositions', PRX: 'Prix magasin', PHO: 'Photos'
+  AVI: 'Avis', PRP: 'Propositions', PRX: 'Prix magasin', PHO: 'Photos', TCK: 'Tickets'
 };
 // En-têtes des onglets créés par l'appli (et colonnes ajoutées aux onglets existants).
 var HEADS = {
@@ -40,7 +40,8 @@ var HEADS = {
   'Avis': ['Recette', 'Identifiant', 'Favori', 'Note (1-5)', 'Commentaire', 'Date'],
   'Propositions': ['N°', 'Type', 'Statut', 'Par', 'Date', 'Titre', 'Données (ne pas modifier)', 'Réponse'],
   'Prix magasin': ['Ingrédient', 'Magasin', 'Conditionnement (g)', 'Prix du paquet (€)', 'Date', 'Par'],
-  'Photos': ['Recette', 'Image (ne pas modifier)', 'Par', 'Date']
+  'Photos': ['Recette', 'Image (ne pas modifier)', 'Par', 'Date'],
+  'Tickets': ['N°', 'Date', 'Par', 'Écran', 'Erreur', 'Rapport', 'Commentaire', 'Statut', 'Réponse']
 };
 var EXTRA_COLS = { 'Ingrédients': { 14: 'Allergènes' }, 'Stock cuisine': { 5: 'Foyer' } };
 
@@ -116,17 +117,23 @@ function doPost(e) {
   return handle_(body);
 }
 
+// Actions qui ne font que lire : elles profitent de la mémoire d'un appel (READ_CACHE).
+var READ_ONLY = { data: 1, check: 1, foyerWeek: 1, photos: 1, barcode: 1, signupInfo: 1, ping: 1, dashboard: 1, listAccounts: 1 };
+
 function handle_(req) {
   try {
     var action = req.action || 'data';
     var out, me;
+    SS_CACHE = null;
+    READ_CACHE = READ_ONLY[action] ? {} : null;
     var PUBLIC = {
       ping: function () { return { pong: true }; },
       login: function () { return withLock_(function () { return login_(req.id, req.password); }); },
       signupInfo: function () { return { open: signupOpen_() }; },
       signup: function () { return withLock_(function () { return signup_(req.account); }); },
       forgot: function () { return forgot_(req.email); },
-      resetWithCode: function () { return withLock_(function () { return resetWithCode_(req.email, req.code, req.password); }); }
+      resetWithCode: function () { return withLock_(function () { return resetWithCode_(req.email, req.code, req.password); }); },
+      ticket: function () { return withLock_(function () { return ticket_(req.token, req.ticket); }); }
     };
     if (PUBLIC[action]) out = PUBLIC[action]();
     else {
@@ -182,6 +189,7 @@ function adminAction_(action, req, me) {
       PropertiesService.getScriptProperties().setProperty('SIGNUP_OPEN', req.open ? 'oui' : 'non');
       return { signupOpen: signupOpen_() };
     case 'dashboard': return dashboard_();
+    case 'resolveTicket': return resolveTicket_(req.n, req.reply);
     case 'decide': return decide_(me, req.n, req.accept, req.reply, req.data);
     case 'deleteComment': return deleteComment_(req.recipe, req.id);
     case 'setPhoto': return setPhoto_(req.recipe, req.image, me.id);
@@ -209,13 +217,23 @@ function withLock_(fn) {
 
 /* ===================== Accès au Sheet ===================== */
 
-function ss_() { return SpreadsheetApp.getActive(); }
-function sheet_(name) {
+/* Mémoire d'un seul appel (vitesse) : pour les actions de LECTURE, chaque onglet n'est lu
+   qu'une fois. Désactivée pour les actions qui écrivent (comportement inchangé). */
+var READ_CACHE = null, SS_CACHE = null;
+function ss_() { return SS_CACHE || (SS_CACHE = SpreadsheetApp.getActive()); }
+function sheetOrNull_(name) {
+  if (READ_CACHE && READ_CACHE.hasOwnProperty('#' + name)) return READ_CACHE['#' + name];
   var s = ss_().getSheetByName(name);
-  if (!s) throw err_('ONGLET', 'Onglet introuvable : ' + name + '. Dans le Sheet : menu Appli recettes > 1. Installer / vérifier.');
+  if (READ_CACHE) READ_CACHE['#' + name] = s;
   return s;
 }
-function has_(name) { return !!ss_().getSheetByName(name); }
+function sheet_(name) {
+  var s = sheetOrNull_(name);
+  if (!s) throw err_('ONGLET', 'Onglet introuvable : ' + name + '. Dans le Sheet : menu Appli recettes > 1. Installer / vérifier.');
+  if (READ_CACHE) delete READ_CACHE[name]; // l'onglet va peut-être être modifié : on le relira
+  return s;
+}
+function has_(name) { return !!sheetOrNull_(name); }
 
 function ensureCols_(s, n) {
   var max = s.getMaxColumns();
@@ -224,15 +242,22 @@ function ensureCols_(s, n) {
 
 // Lignes de données (à partir de la ligne 2), complétées par des cases vides si l'onglet est plus étroit.
 function rows_(name, ncol) {
-  if (!has_(name)) return [];
-  var s = sheet_(name);
+  if (READ_CACHE && READ_CACHE[name] && READ_CACHE[name].ncol >= ncol) return READ_CACHE[name].rows;
+  var s = sheetOrNull_(name);
+  if (!s) return [];
   var last = s.getLastRow();
-  if (last < 2) return [];
-  var nc = Math.min(ncol, s.getMaxColumns());
-  return s.getRange(2, 1, last - 1, nc).getValues().map(function (v, i) {
-    while (v.length < ncol) v.push('');
-    v.row = i + 2; return v;
-  });
+  // En mode lecture, toutes les colonnes utiles sont lues d'un coup (une seule lecture par onglet).
+  var want = READ_CACHE ? Math.max(ncol, 21) : ncol;
+  var rows = [];
+  if (last >= 2) {
+    var nc = Math.min(want, s.getMaxColumns());
+    rows = s.getRange(2, 1, last - 1, nc).getValues().map(function (v, i) {
+      while (v.length < want) v.push('');
+      v.row = i + 2; return v;
+    });
+  }
+  if (READ_CACHE) READ_CACHE[name] = { ncol: want, rows: rows };
+  return rows;
 }
 function filled_(name, ncol) { return rows_(name, ncol).filter(function (r) { return s_(r[0]).trim(); }); }
 function clearRow_(name, row, ncol) { sheet_(name).getRange(row, 1, 1, ncol).clearContent(); }
@@ -291,7 +316,7 @@ function ensureTab_(name) {
 }
 function ensureAll_() {
   var created = [];
-  ['Profils', 'Comptes', 'Foyers', 'Plannings', 'Courses', 'Poids', 'Avis', 'Propositions', 'Prix magasin', 'Photos'].forEach(function (n) {
+  ['Profils', 'Comptes', 'Foyers', 'Plannings', 'Courses', 'Poids', 'Avis', 'Propositions', 'Prix magasin', 'Photos', 'Tickets'].forEach(function (n) {
     if (ensureTab_(n)) created.push(n);
   });
   Object.keys(EXTRA_COLS).forEach(function (tab) {
@@ -646,17 +671,18 @@ function getData_(me) {
   });
   var avis = avisSummary_(me);
   var offers = filled_(TABS.PRX, 6).map(function (r) { return { ing: s_(r[0]), magasin: s_(r[1]), pack: n_(r[2]), prix: n_(r[3]), date: s_(r[4]) }; });
-  var photos = filled_(TABS.PHO, 2).filter(function (r) { return s_(r[1]); }).map(function (r) { return s_(r[0]); });
+  var photos = photoNames_();
   var mine = filled_(TABS.PRP, 8).filter(function (r) { return s_(r[3]) === me.id; }).map(function (r) {
     return { n: n_(r[0]), type: s_(r[1]), statut: s_(r[2]), date: s_(r[4]), title: s_(r[5]), reply: s_(r[7]) };
   });
   var out = { ingredients: cat.ingredients, recipes: cat.recipes, stock: stock, profile: profileOf_(me.name), weights: weights,
     foyer: foyer, plan: plan, checks: checks, avis: avis.recipes, myAvis: avis.mine, offers: offers, photos: photos,
-    myProposals: mine, hasRoleColumns: s_(sheet_(TABS.ING).getRange(1, 12).getValue()) !== '',
+    myProposals: mine, hasRoleColumns: s_(sheetOrNull_(TABS.ING).getRange(1, 12).getValue()) !== '',
     fetchedAt: new Date().toISOString() };
   if (me.role === 'admin') {
     out.pending = filled_(TABS.PRP, 8).filter(function (r) { return s_(r[2]) === 'en attente'; }).length;
     out.signupOpen = signupOpen_();
+    out.tickets = filled_(TABS.TCK, 8).filter(function (r) { return s_(r[7]) !== 'résolu'; }).length;
   }
   return out;
 }
@@ -995,11 +1021,62 @@ function setPhoto_(recipe, image, by) {
   if (ex) sheet_(TABS.PHO).getRange(ex.row, 1, 1, 4).setValues([row]); else appendRow_(TABS.PHO, row);
   return {};
 }
+// Noms des recettes qui ont une photo : seule la colonne A est lue (les images sont lourdes).
+function photoNames_() {
+  var s = sheetOrNull_(TABS.PHO);
+  if (!s || s.getLastRow() < 2) return [];
+  return s.getRange(2, 1, s.getLastRow() - 1, 1).getValues().map(function (r) { return s_(r[0]); }).filter(Boolean);
+}
 function photos_(names) {
   var want = {}; (names || []).slice(0, 40).forEach(function (n) { want[n] = 1; });
   var out = {};
   filled_(TABS.PHO, 2).forEach(function (r) { if (want[s_(r[0])] && s_(r[1])) out[s_(r[0])] = s_(r[1]); });
   return { photos: out };
+}
+
+/* ===================== Tickets d'erreur ===================== */
+// Une personne signale une erreur : le ticket est noté dans l'onglet Tickets et l'admin reçoit un e-mail.
+// Le rapport ne contient ni mot de passe, ni jeton, ni e-mail (masqués par l'appli avant l'envoi).
+function adminEmails_() {
+  var list = [];
+  try { var own = Session.getEffectiveUser().getEmail(); if (own) list.push(own); } catch (e) { /* droit e-mail absent */ }
+  accounts_().forEach(function (a) { if (a.role === 'admin' && a.active && a.email && list.indexOf(a.email) < 0) list.push(a.email); });
+  return list;
+}
+function ticket_(token, t) {
+  t = t || {};
+  var by = '(non connecté)';
+  try { by = auth_(token).id; } catch (e) { /* ticket envoyé depuis l'écran de connexion */ }
+  var cache = CacheService.getScriptCache();
+  var k = 'tck:' + by, n0 = Number(cache.get(k) || 0);
+  if (n0 >= 10) throw err_('BLOQUE', 'Beaucoup de tickets envoyés : l’admin est déjà prévenu. Réessaie plus tard.');
+  var msg = cleanText_(t.message, 300), screen = cleanText_(t.screen, 80);
+  var dupKey = 'tckd:' + hmac_(by + '|' + msg + '|' + screen, 'ticket').slice(0, 40);
+  if (cache.get(dupKey)) return { duplicate: true };
+  ensureAll_();
+  var n = filled_(TABS.TCK, 1).reduce(function (m, r) { return Math.max(m, n_(r[0]) || 0); }, 0) + 1;
+  appendRow_(TABS.TCK, [n, new Date(), by, screen, msg, cleanText_(t.report, 3000), cleanText_(t.comment, 500), 'ouvert', '']);
+  cache.put(k, String(n0 + 1), 3600); cache.put(dupKey, '1', 600);
+  try {
+    var to = adminEmails_();
+    if (to.length) MailApp.sendEmail({ to: to.join(','), subject: 'La Juste Assiette : ticket n°' + n + ' de ' + by,
+      body: 'Nouveau ticket n°' + n + '\n\nPar : ' + by + '\nÉcran : ' + screen + '\nErreur : ' + msg +
+        (t.comment ? '\nCommentaire : ' + cleanText_(t.comment, 500) : '') + '\n\n--- Rapport ---\n' + cleanText_(t.report, 3000).replace(/ \| /g, '\n') +
+        '\n\nÀ voir dans l’appli : Plus › Tableau de bord › Tickets.' });
+  } catch (e) { /* l'e-mail est un plus : le ticket est déjà enregistré */ }
+  return { n: n };
+}
+function resolveTicket_(n, reply) {
+  var r = filled_(TABS.TCK, 9).filter(function (x) { return n_(x[0]) === Number(n); })[0];
+  if (!r) throw err_('INTROUVABLE', 'Ticket introuvable.');
+  sheet_(TABS.TCK).getRange(r.row, 8, 1, 2).setValues([['résolu', cleanText_(reply, 300)]]);
+  return { n: Number(n) };
+}
+function ticketsList_() {
+  return filled_(TABS.TCK, 9).map(function (r) {
+    return { n: n_(r[0]), date: s_(r[1]), by: s_(r[2]), screen: s_(r[3]), message: s_(r[4]), report: s_(r[5]),
+      comment: s_(r[6]), statut: s_(r[7]) || 'ouvert', reply: s_(r[8]) };
+  }).sort(function (a, b) { return ((a.statut === 'résolu') - (b.statut === 'résolu')) || (b.n - a.n); }).slice(0, 60);
 }
 
 /* ===================== Tableau de bord admin ===================== */
@@ -1029,9 +1106,9 @@ function dashboard_() {
     noRole: cat.ingredients.filter(function (i) { return !i.role || !i.rayon; }).map(function (i) { return i.name; }),
     badRecipes: cat.recipes.filter(function (r) { return r.controle && r.controle !== 'OK'; }).map(function (r) { return r.name + ' (' + r.controle + ')'; }),
     unused: cat.ingredients.filter(function (i) { return !used[i.name]; }).map(function (i) { return i.name; }),
-    noPhoto: cat.recipes.filter(function (r) { return !filled_(TABS.PHO, 1).some(function (p) { return s_(p[0]) === r.name; }); }).map(function (r) { return r.name; })
+    noPhoto: (function () { var has = {}; photoNames_().forEach(function (n) { has[n] = 1; }); return cat.recipes.filter(function (r) { return !has[r.name]; }).map(function (r) { return r.name; }); })()
   };
-  return { pending: pending, popular: popular, users: users, quality: quality };
+  return { pending: pending, popular: popular, users: users, quality: quality, tickets: ticketsList_() };
 }
 
 /* ===================== Écritures du catalogue (admin) ===================== */
