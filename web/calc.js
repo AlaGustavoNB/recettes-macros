@@ -518,7 +518,8 @@
     var factor = activityFactor(p.seances, p.metier);
     var goal = norm(p.objectif) || 'maintien';
     var kcal = Math.round(bmr * factor * (GOAL_K[goal] || 1) / 10) * 10;
-    var gkg = num(p.protGkg) || PROT_GKG[goal] || 1.6;
+    var gkg = num(p.protGkg);
+    if (!(gkg >= 0.8 && gkg <= 3.5)) gkg = PROT_GKG[goal] || 1.6; // valeur absente ou hors limites : valeur conseillée
     var prot = Math.round(w * gkg);
     var lip = Math.round(w * 0.9);
     var glu = Math.max(0, Math.round((kcal - prot * 4 - lip * 9) / 4));

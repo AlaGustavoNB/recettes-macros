@@ -313,3 +313,4 @@ b.small-code { font-size: 1.1rem; }
 .notice.known { background: var(--warn-soft); color: var(--warn-ink); border: 2px solid var(--warn); }
 .notice.known .row { margin-top: 8px; }
 table.qty tr.chg td { background: var(--read-bg); }
+input.bad { border-color: var(--danger); outline: 3px solid var(--danger); outline-offset: 1px; }

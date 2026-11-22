@@ -120,6 +120,8 @@ ok(tgs.kcal === 1890 && tgs.prot === 160, 'Objectifs sèche : −20 % et 2 g/kg'
 var tgf = C.targets({ sexe: 'F', annee: 1996, taille: 165, poids: 60, seances: 0, metier: 'physique', objectif: 'Masse', protGkg: 1.5 }, 2026);
 ok(tgf.prot === 90 && tgf.kcal === Math.round((600 + 1031.25 - 150 - 161) * 1.55 * 1.1 / 10) * 10, 'Objectifs femme, métier physique, masse, protéines g/kg choisies', tgf);
 ok(C.targets({ poids: 80 }) === null, 'Objectifs : rien de proposé sans taille/âge');
+var tgBad = C.targets({ sexe: 'H', annee: 1990, taille: 180, poids: 80, seances: 3, metier: 'assis', objectif: 'Maintien', protGkg: 110 }, 2026);
+ok(tgBad.prot === 128 && tgBad.protGkg === 1.6, 'Objectifs : « 110 g par kg » ignoré (valeur conseillée utilisée), pas de proposition absurde', tgBad);
 
 /* 13. Poids : tendance */
 var wt = C.weightTrend([{ date: '2026-10-19', kg: 80 }, { date: '2026-10-21', kg: 80.2 }, { date: '2026-10-27', kg: 80 }, { date: '2026-11-03', kg: 80.1 }], 'Sèche', 2000);
@@ -171,7 +173,7 @@ ok(C.parseOFF({ status: 0 }) === null, 'Code-barres : produit inconnu → rien d
 
 /* ===== Serveur Apps Script simulé ===== */
 function runServerTests(code) {
-  var writes = [], mails = [];
+  var writes = [], mails = [], reads = 0;
   function Sheet(name, rows, formulaRows) { this.name = name; this.rows = rows; this.fr = formulaRows || 0; }
   Sheet.prototype.getName = function () { return this.name; };
   Sheet.prototype.getMaxRows = function () { return Math.max(1000, this.rows.length); };
@@ -190,7 +192,7 @@ function runServerTests(code) {
   Sheet.prototype.getRange = function (r, c, nr, nc) {
     var s = this; nr = nr || 1; nc = nc || 1;
     return {
-      getValues: function () { var o = []; for (var i = 0; i < nr; i++) { var row = []; for (var j = 0; j < nc; j++) row.push(s.cell(r + i, c + j)); o.push(row); } return o; },
+      getValues: function () { reads++; var o = []; for (var i = 0; i < nr; i++) { var row = []; for (var j = 0; j < nc; j++) row.push(s.cell(r + i, c + j)); o.push(row); } return o; },
       getValue: function () { return s.cell(r, c); },
       setValues: function (v) { v.forEach(function (row, i) { row.forEach(function (x, j) { s.put(r + i, c + j, x); }); }); return this; },
       setValue: function (v) { s.put(r, c, v); return this; },
@@ -390,6 +392,12 @@ function runServerTests(code) {
     call({ action: 'updateLine', token: tk, row: 4, recipe: EX, ing: 'Filet de poulet cru', qty: 1 }).code === 'DECALE', 'Quantité modifiée, ligne décalée détectée');
   var su2 = call({ action: 'setup', token: tk });
   ok(su2.ok && sheets['Ingrédients'].cell(2, 12) === 'glucide' && sheets['Ingrédients'].cell(6, 12) === 'protéine', 'Rôle/Rayon proposés, valeur saisie gardée');
+
+  /* Performance : lectures du Sheet par appel courant */
+  var countReads = function (o) { reads = 0; var r = call(o); return { n: reads, ok: r.ok }; };
+  var perf = { data: countReads({ action: "data", token: ctk }), foyerWeek: countReads({ action: "foyerWeek", token: ctk, week: WEEK }), dashboard: countReads({ action: "dashboard", token: tk }) };
+  ok(perf.data.ok && perf.foyerWeek.ok && perf.dashboard.ok, "Mesure : lectures du Sheet (data " + perf.data.n + ", foyerWeek " + perf.foyerWeek.n + ", dashboard " + perf.dashboard.n + ")", perf);
+  window.PERF = perf;
 
   /* Suppression de compte */
   ok(call({ action: 'deleteMe', token: ptk, password: 'faux' }).code === 'MDP_FAUX', 'Suppression : mot de passe demandé');
