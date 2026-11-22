@@ -78,6 +78,7 @@
       var pp = $('#f-pricephoto', el); pp.onchange = function () { ocrFlow(pp.files[0], 'prix'); pp.value = ''; };
       // Code-barres : photo → lecture du code → fiche Open Food Facts → champs pré-remplis (modifiables).
       var eanOut = $('#ean-out', el);
+      if (!('BarcodeDetector' in window) && navigator.onLine) loadZxing().catch(function () {}); // lecteur prêt avant le scan (iPhone)
       var lookup = function (code) {
         code = String(code || '').replace(/\D/g, '');
         if (!C.validEan(code)) { eanOut.innerHTML = '<div class="notice warn">Code-barres non valide (' + esc(code || 'vide') + '). Vérifie les chiffres.</div>'; return; }
@@ -171,7 +172,14 @@
           else await A.Api.call('propose', { token: S.token, type: 'ingrédient', title: ing.name, data: { ingredient: ing } });
           Store.del('ingDraft');
           var back2 = Store.get('fromScan', false); Store.del('fromScan');
-          if (admin) { await A.refreshStrict(); A.toast('Enregistré dans le Sheet'); A.go(back2 ? '#/ingredient/nouveau' : editing ? '#/ingredients' : (forRecipe ? '#/proposer' : '#/gestion')); }
+          if (admin) {
+            // Mise à jour immédiate à l'écran ; le Sheet est relu en arrière-plan (pas d'attente).
+            var list2 = (S.data.ingredients || []).filter(function (x) { return x.name !== (editing ? editing.name : ing.name); });
+            list2.push(Object.assign({}, editing || {}, ing, { name: editing ? editing.name : ing.name }));
+            S.data.ingredients = list2; A.setData(S.data);
+            A.toast('Enregistré dans le Sheet'); A.go(back2 ? '#/ingredient/nouveau' : editing ? '#/ingredients' : (forRecipe ? '#/proposer' : '#/gestion'));
+            A.refresh(true);
+          }
           else { await A.refreshStrict(); A.toast('Ingrédient envoyé à l’admin. Merci !'); A.go('#/recettes'); }
         });
       };
@@ -500,11 +508,21 @@
     if (!A.isAdmin()) return A.redirect('#/plus');
     var D = S.dash;
     var tab = Store.get('adminTab', 'valider');
-    var tabs = [['valider', 'À valider'], ['pop', 'Populaires'], ['users', 'Utilisateurs'], ['qualite', 'Qualité']];
+    var tabs = [['valider', 'À valider'], ['tickets', 'Tickets'], ['pop', 'Populaires'], ['users', 'Utilisateurs'], ['qualite', 'Qualité']];
     var body = '';
     if (!D) body = '<p class="muted">Chargement…</p>';
     else if (tab === 'valider') {
       body = D.pending.length ? D.pending.map(function (p, i) { return proposalCard(p, i); }).join('') : '<p>Rien à valider. 👍</p>';
+    } else if (tab === 'tickets') {
+      var tl = D.tickets || [];
+      body = tl.length ? tl.map(function (t) {
+        var open = t.statut !== 'résolu';
+        return '<div class="panel' + (open ? '' : ' done-panel') + '"><div class="panel-title">N°' + t.n + ' · ' + esc(t.by) + ' <span class="badge ' + (open ? 'warn' : 'ok') + '">' + esc(t.statut) + '</span></div>' +
+          '<p class="muted small">' + esc(A.dayFr(String(t.date).slice(0, 10))) + ' · écran ' + esc(t.screen) + '</p>' +
+          '<p><b>' + esc(t.message) + '</b></p>' + (t.comment ? '<p class="small">« ' + esc(t.comment) + ' »</p>' : '') +
+          '<details><summary>Rapport complet</summary><pre>' + esc(t.report) + '</pre><button class="btn small ghost" data-tcopy="' + t.n + '">Copier le rapport</button></details>' +
+          (open ? '<button class="btn small primary" data-tsolve="' + t.n + '">Marquer comme résolu</button>' : (t.reply ? '<p class="muted small">Réponse : ' + esc(t.reply) + '</p>' : '')) + '</div>';
+      }).join('') : '<p>Aucun ticket. 👍</p>';
     } else if (tab === 'pop') {
       body = '<table class="qty"><thead><tr><th>Recette</th><th>Prévue</th><th>Note</th><th>♥</th></tr></thead><tbody>' + D.popular.map(function (r) {
         return '<tr><td><a href="#/recette/' + enc(r.name) + '">' + esc(r.name) + '</a></td><td>' + r.planned + '</td><td>' + (r.avg ? fmt(r.avg, 1) + ' (' + r.votes + ')' : '—') + '</td><td>' + r.favs + '</td></tr>';
@@ -528,8 +546,8 @@
         sec('Ingrédients utilisés dans aucune recette', q.unused, function (n) { return '#/ingredient/' + enc(n); });
     }
     var html = '<section class="screen"><a class="back" href="#/plus">‹ Plus</a><div class="row between"><h1>Tableau de bord</h1><button class="btn small ghost" id="d-reload">Actualiser</button></div>' +
-      '<div class="seg" role="tablist">' + tabs.map(function (t) {
-        var n = t[0] === 'valider' && D ? ' (' + D.pending.length + ')' : '';
+      '<div class="seg seg-wrap" role="tablist">' + tabs.map(function (t) {
+        var n = !D ? '' : t[0] === 'valider' ? ' (' + D.pending.length + ')' : t[0] === 'tickets' ? ' (' + (D.tickets || []).filter(function (x) { return x.statut !== 'résolu'; }).length + ')' : '';
         return '<button class="seg-b' + (tab === t[0] ? ' on' : '') + '" data-tab2="' + t[0] + '" role="tab" aria-selected="' + (tab === t[0]) + '">' + t[1] + n + '</button>';
       }).join('') + '</div>' + body + '</section>';
     return { tab: 'plus', html: html, bind: function (el) {
@@ -537,6 +555,19 @@
       if (!D) load();
       $('#d-reload', el).onclick = function () { S.dash = null; A.render(); };
       $$('[data-tab2]', el).forEach(function (b) { b.onclick = function () { Store.set('adminTab', b.getAttribute('data-tab2')); A.render(); }; });
+      $$('[data-tcopy]', el).forEach(function (b) {
+        b.onclick = function () { var t = (D.tickets || []).filter(function (x) { return String(x.n) === b.getAttribute('data-tcopy'); })[0]; A.copyText(t.report).then(function () { A.toast('Rapport copié : colle-le dans Claude Code'); }); };
+      });
+      $$('[data-tsolve]', el).forEach(function (b) {
+        b.onclick = function () {
+          var reply = prompt('Note (facultatif) :', '');
+          if (reply === null) return;
+          A.act('ticket résolu', async function () {
+            await A.Api.call('resolveTicket', { token: S.token, n: Number(b.getAttribute('data-tsolve')), reply: reply }, { tries: 1 });
+            S.dash = null; A.refresh(true); A.toast('Ticket résolu');
+          }, false);
+        };
+      });
       $$('[data-decide]', el).forEach(function (b) {
         b.onclick = function () {
           var p = D.pending[Number(b.getAttribute('data-i'))], yes = b.getAttribute('data-decide') === 'oui';

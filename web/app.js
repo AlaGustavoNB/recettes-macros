@@ -2,7 +2,7 @@
    Les écrans sont dans screens-*.js (ils s'enregistrent avec App.route). */
 (function () {
   'use strict';
-  var VERSION = '2.6.1';
+  var VERSION = '2.7.0';
   var C = window.Calc, Store = window.Store, Api = window.Api, Sync = Api.Sync;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
@@ -134,6 +134,7 @@
   Sync.on(function (ev, err, item) {
     if (ev === 'error') {
       if (err.code === 'NON_CONNECTE') { logout('Connexion expirée : reconnecte-toi.'); return; }
+      if (item && item.action === 'ticket') { toast('Le ticket n’a pas pu être envoyé : ' + err.message); return; }
       showError(Object.assign(err, { message: 'Modification non enregistrée (' + (item && item.action) + ') : ' + err.message }));
     }
     // Mise à jour automatique : dès que toutes les modifications sont envoyées, on relit les données
@@ -358,19 +359,41 @@
   function showError(err, retry) {
     S.lastError = err;
     var box = $('#errorbox');
+    // Erreur « attendue » (saisie, réseau, mot de passe…) : on explique quoi faire.
+    // Erreur inattendue (bug) : message simple + ticket, sauf pour l'admin qui voit le détail.
+    var bug = !USER_ERRORS[err.code];
+    var simple = bug && !isAdminAccount();
     box.innerHTML = '<div class="err-card" role="alert">' +
-      '<p class="err-title">' + esc(err.message || 'Une erreur est survenue.') + '</p>' +
-      '<p class="err-advice">' + esc(ADVICE[err.code] || 'Réessaie. Si ça recommence, copie le rapport et colle-le dans Claude Code.') + '</p>' +
-      '<div class="row wrap">' + (retry ? '<button class="btn" data-x="retry">Réessayer</button>' : '') +
-      '<button class="btn ghost" data-x="copy">Copier le rapport d’erreur</button>' +
-      '<button class="btn ghost" data-x="close">Fermer</button></div></div>';
+      (simple ? '<p class="err-title">Oups, un problème est survenu.</p>' +
+        '<p class="err-advice">Ce n’est pas de ta faute. Envoie un ticket : l’admin reçoit le détail et corrigera.</p>' +
+        '<textarea id="tk-com" rows="2" maxlength="500" placeholder="Que faisais-tu ? (facultatif)" aria-label="Ce que tu faisais"></textarea>'
+        : '<p class="err-title">' + esc(err.message || 'Une erreur est survenue.') + '</p>' +
+        '<p class="err-advice">' + esc(ADVICE[err.code] || 'Réessaie. Si ça recommence, copie le rapport et colle-le dans Claude Code.') + '</p>') +
+      '<div class="row wrap">' +
+      (simple ? '<button class="btn primary" data-x="ticket">Envoyer un ticket</button>' : '') +
+      (retry ? '<button class="btn" data-x="retry">Réessayer</button>' : '') +
+      (isAdminAccount() ? '<button class="btn ghost" data-x="copy">Copier le rapport d’erreur</button>' : '') +
+      '<button class="btn ghost" data-x="close">Fermer</button></div>' +
+      (!simple && !isAdminAccount() ? '<button class="linkbtn small" data-x="ticket">Ce message te semble anormal ? Envoyer un ticket</button>' : '') + '</div>';
     box.hidden = false;
     box.onclick = function (e) {
       var x = e.target.getAttribute('data-x');
       if (x === 'close') box.hidden = true;
       if (x === 'retry') { box.hidden = true; retry(); }
       if (x === 'copy') copyText(report(err)).then(function (ok) { toast(ok ? 'Rapport copié. Colle-le dans Claude Code.' : 'Copie impossible : fais une capture d’écran.'); });
+      if (x === 'ticket') { var c = $('#tk-com'); sendTicket(err, c ? c.value : ''); box.hidden = true; }
     };
+  }
+  // Erreurs qui ne sont pas des bugs : pas de ticket proposé d'office.
+  var USER_ERRORS = { HORS_LIGNE: 1, RESEAU: 1, OCCUPE: 1, MDP_FAUX: 1, CODE_FAUX: 1, DOUBLON: 1, VALEUR: 1, BLOQUE: 1,
+    INSCRIPTION_FERMEE: 1, NON_AUTORISE: 1, NON_CONNECTE: 1, PAS_DE_COMPTE: 1, DECALE: 1, CAMERA: 1, PHOTO: 1, OFF: 1, INTROUVABLE: 1 };
+  // Ticket : envoyé tout de suite, ou dès que le réseau revient (file d'attente).
+  function sendTicket(err, comment) {
+    var payload = { ticket: { screen: location.hash || '#/', message: (err.code ? err.code + ' : ' : '') + scrub(err.message || String(err)),
+      report: report(err), comment: scrub(comment || '') } };
+    if (S.token) Sync.push(null, 'ticket', payload);
+    else Api.call('ticket', payload, { tries: 2 }).catch(function () {});
+    toast('Ticket envoyé, merci ! L’admin est prévenu.');
   }
   window.addEventListener('error', function (e) { var err = e.error || new Error(e.message); if (!err.code) err.code = 'JS'; showError(err); });
   window.addEventListener('unhandledrejection', function (e) {
@@ -425,7 +448,7 @@
     $$('#nav a').forEach(function (a) { a.classList.toggle('on', a.getAttribute('data-tab') === tab); });
     $('#nav').hidden = !S.token || !S.data || !prof();
     var badge = $('#nav [data-tab="plus"] .dot');
-    var n = isAdmin() && S.data ? (S.data.pending || 0) : 0;
+    var n = isAdmin() && S.data ? (S.data.pending || 0) + (S.data.tickets || 0) : 0;
     if (badge) { badge.textContent = n; badge.hidden = !n; }
   }
   function redirect(h) { setTimeout(function () { go(h); }); return { html: '' }; }
@@ -465,7 +488,7 @@
           if (!id || !pw) return;
           act('connexion', async function () { await afterLogin(await Api.call('login', { id: id, password: pw }, { tries: 2 })); }, false);
         };
-        $('#l-demo').onclick = function () { Store.set('demo', !demo()); if (window.Demo) Demo.reset(); render(); };
+        $('#l-demo').onclick = function () { Store.set('demo', !demo()); Api.loadDemo().then(function () { Demo.reset(); render(); }, function () { render(); }); };
       } };
   });
 
@@ -542,13 +565,13 @@
           Store.set('demo', false); logout('Serveur enregistré. Connecte-toi.');
         };
         $('#c-demo').onclick = function () { Store.set('demo', !demo()); logout(demo() ? 'Mode démo : admin ou client, mot de passe demo1234.' : 'Mode démo quitté.'); };
-        var cr = $('#c-reset'); if (cr) cr.onclick = function () { Demo.reset(); logout('Démo remise à zéro.'); };
+        var cr = $('#c-reset'); if (cr) cr.onclick = function () { Api.loadDemo().then(function () { Demo.reset(); logout('Démo remise à zéro.'); }); };
       } };
   });
 
   /* ================= Plus ================= */
   route(/^#\/plus$/, function () {
-    var adm = isAdminAccount(), pend = (S.data.pending || 0);
+    var adm = isAdminAccount(), pend = (S.data.pending || 0), tks = (S.data.tickets || 0);
     var item = function (href, label, extra) { return '<a class="btn big" href="' + href + '">' + label + (extra || '') + '</a>'; };
     return { tab: 'plus', html: '<section class="screen"><h1>Plus</h1>' +
       '<p class="muted">Connecté : <b>' + esc(S.me.name) + '</b> (' + esc(S.me.id) + (adm ? ', admin' : '') + ')' +
@@ -559,7 +582,7 @@
         '<button class="btn ' + (!isAdmin() ? 'primary' : '') + '" data-view="client">Vue client</button></div>' +
         '<p class="muted small">La vue client montre l’appli comme la voient tes proches.</p></div>' : '') +
       (isAdmin() ? '<div class="panel"><div class="panel-title">Admin</div><div class="stack">' +
-        item('#/admin', 'Tableau de bord', pend ? ' <span class="badge warn">' + pend + ' à valider</span>' : '') +
+        item('#/admin', 'Tableau de bord', (pend ? ' <span class="badge warn">' + pend + ' à valider</span>' : '') + (tks ? ' <span class="badge warn">' + tks + ' ticket(s)</span>' : '')) +
         item('#/gestion', 'Gestion de la base') + item('#/comptes', 'Comptes utilisateurs') + '</div></div>' : '') +
       '<div class="stack">' +
       item('#/profil', 'Mes objectifs') + item('#/poids', 'Mon poids') + item('#/foyer', 'Mon foyer') +
@@ -689,7 +712,17 @@
     else if (S.data && !('plan' in S.data)) setData(null); // copie d'une ancienne version : on relit
     render();
     if (S.token) { keepStorage(); Sync.flush(); refresh(true); }
-    if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(function () {});
+    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+      var hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.register('sw.js').catch(function () {});
+      // Nouvelle version téléchargée en arrière-plan : on recharge dès que c'est sans risque
+      // (pas de formulaire en cours, rien en attente d'envoi), sinon à la prochaine ouverture.
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (!hadController || S.reloading) return;
+        if (!isFormScreen() && !Sync.queue().length) { S.reloading = true; location.reload(); }
+        else toast('Nouvelle version prête : elle s’ouvrira au prochain lancement.');
+      });
+    }
   }
 
   window.App = {

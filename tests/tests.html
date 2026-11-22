@@ -173,7 +173,7 @@ ok(C.parseOFF({ status: 0 }) === null, 'Code-barres : produit inconnu → rien d
 
 /* ===== Serveur Apps Script simulé ===== */
 function runServerTests(code) {
-  var writes = [], mails = [], reads = 0;
+  var writes = [], mails = [], reads = 0, readTabs = {};
   function Sheet(name, rows, formulaRows) { this.name = name; this.rows = rows; this.fr = formulaRows || 0; }
   Sheet.prototype.getName = function () { return this.name; };
   Sheet.prototype.getMaxRows = function () { return Math.max(1000, this.rows.length); };
@@ -192,7 +192,7 @@ function runServerTests(code) {
   Sheet.prototype.getRange = function (r, c, nr, nc) {
     var s = this; nr = nr || 1; nc = nc || 1;
     return {
-      getValues: function () { reads++; var o = []; for (var i = 0; i < nr; i++) { var row = []; for (var j = 0; j < nc; j++) row.push(s.cell(r + i, c + j)); o.push(row); } return o; },
+      getValues: function () { reads++; readTabs[s.name] = (readTabs[s.name] || 0) + 1; var o = []; for (var i = 0; i < nr; i++) { var row = []; for (var j = 0; j < nc; j++) row.push(s.cell(r + i, c + j)); o.push(row); } return o; },
       getValue: function () { return s.cell(r, c); },
       setValues: function (v) { v.forEach(function (row, i) { row.forEach(function (x, j) { s.put(r + i, c + j, x); }); }); return this; },
       setValue: function (v) { s.put(r, c, v); return this; },
@@ -393,10 +393,22 @@ function runServerTests(code) {
   var su2 = call({ action: 'setup', token: tk });
   ok(su2.ok && sheets['Ingrédients'].cell(2, 12) === 'glucide' && sheets['Ingrédients'].cell(6, 12) === 'protéine', 'Rôle/Rayon proposés, valeur saisie gardée');
 
+  /* Tickets d'erreur */
+  mails.length = 0;
+  var tk1 = call({ action: 'ticket', token: ctk, ticket: { screen: '#/profil', message: 'JS : x is undefined', report: 'Rapport…', comment: 'Je changeais mes objectifs' } });
+  ok(tk1.ok && tk1.n === 1 && sheets['Tickets'].cell(2, 3) === 'marine' && sheets['Tickets'].cell(2, 8) === 'ouvert', 'Ticket : enregistré avec son auteur', tk1);
+  ok(call({ action: 'ticket', token: ctk, ticket: { screen: '#/profil', message: 'JS : x is undefined' } }).duplicate === true, 'Ticket : doublon immédiat ignoré');
+  ok(call({ action: 'ticket', ticket: { screen: '#/login', message: 'REPONSE : serveur' } }).n === 2 && sheets['Tickets'].cell(3, 3) === '(non connecté)', 'Ticket : possible depuis l’écran de connexion');
+  ok(call({ action: 'data', token: tk }).tickets === 2 && call({ action: 'data', token: ctk }).tickets === undefined, 'Ticket : compteur visible par l’admin seulement');
+  var dbt = call({ action: 'dashboard', token: tk });
+  ok(dbt.tickets.length === 2 && dbt.tickets[0].n === 2, 'Ticket : liste dans le tableau de bord, le plus récent en premier');
+  ok(call({ action: 'resolveTicket', token: ctk, n: 1 }).code === 'NON_AUTORISE' && call({ action: 'resolveTicket', token: tk, n: 1, reply: 'Corrigé' }).ok &&
+    call({ action: 'data', token: tk }).tickets === 1, 'Ticket : marqué résolu par l’admin seulement');
+
   /* Performance : lectures du Sheet par appel courant */
-  var countReads = function (o) { reads = 0; var r = call(o); return { n: reads, ok: r.ok }; };
+  var countReads = function (o) { reads = 0; readTabs = {}; var r = call(o); var twice = Object.keys(readTabs).filter(function (k) { return readTabs[k] > 1; }); return { n: reads, ok: r.ok, twice: twice }; };
   var perf = { data: countReads({ action: "data", token: ctk }), foyerWeek: countReads({ action: "foyerWeek", token: ctk, week: WEEK }), dashboard: countReads({ action: "dashboard", token: tk }) };
-  ok(perf.data.ok && perf.foyerWeek.ok && perf.dashboard.ok, "Mesure : lectures du Sheet (data " + perf.data.n + ", foyerWeek " + perf.foyerWeek.n + ", dashboard " + perf.dashboard.n + ")", perf);
+  ok(perf.data.ok && perf.foyerWeek.ok && perf.dashboard.ok && !perf.data.twice.length && !perf.foyerWeek.twice.length && !perf.dashboard.twice.length && perf.data.n <= 16, "Rapidité : jamais deux lectures du même onglet dans un appel (data " + perf.data.n + ", foyerWeek " + perf.foyerWeek.n + ", dashboard " + perf.dashboard.n + ")", perf);
   window.PERF = perf;
 
   /* Suppression de compte */

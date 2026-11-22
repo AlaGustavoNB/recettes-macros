@@ -56,7 +56,8 @@
   function index(ingredients) {
     var exact = {}, loose = {};
     (ingredients || []).forEach(function (i) { exact[i.name] = i; loose[norm(i.name)] = i; });
-    return { exact: exact, loose: loose, list: ingredients || [] };
+    // memo : totaux des recettes déjà calculés (vidé à chaque nouvelle lecture du Sheet, car nouvel index).
+    return { exact: exact, loose: loose, list: ingredients || [], memo: typeof WeakMap !== 'undefined' ? new WeakMap() : null };
   }
   // Recherche au caractère près (comme le Sheet), sinon null.
   function find(idx, name) { return idx.exact[name] || null; }
@@ -91,9 +92,16 @@
 
   // Totaux et valeurs par portion d'une recette, telles qu'enregistrées dans le Sheet.
   function recipeTotals(recipe, idx) {
+    // Même recette (objet) et même index : résultat mémorisé (les listes triées le demandent souvent).
+    if (idx && idx.memo && recipe && typeof recipe === 'object') {
+      var hit = idx.memo.get(recipe);
+      if (hit && hit.lines === recipe.lines && hit.portions === recipe.portions) return hit.res;
+    }
     var t = totals(recipe.lines.map(function (l) { return { name: l.ing, qty: num(l.qty) || 0 }; }), idx);
     var portions = num(recipe.portions) || 1;
-    return { total: t, portion: scaleT(t, 1 / portions), portions: portions };
+    var res = { total: t, portion: scaleT(t, 1 / portions), portions: portions };
+    if (idx && idx.memo && recipe && typeof recipe === 'object') idx.memo.set(recipe, { lines: recipe.lines, portions: recipe.portions, res: res });
+    return res;
   }
 
   // Ingrédients d'une portion, avec rôle.

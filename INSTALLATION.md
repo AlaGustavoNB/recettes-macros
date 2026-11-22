@@ -9,7 +9,7 @@ Durée : environ 15 minutes, une seule fois. Tout est gratuit.
 3. **appsscript.json** : efface tout, colle le contenu de `apps-script/appsscript.json`, enregistre.
    (La v2 demande 3 autorisations de plus : copier le Sheet pour la sauvegarde, créer le déclencheur
    du dimanche, envoyer l’e-mail « mot de passe oublié » depuis ton Gmail, interroger Open Food Facts
-   quand le téléphone n’y arrive pas.)
+   quand le téléphone n’y arrive pas, connaître ton adresse pour t’envoyer les tickets d’erreur.)
 4. Retourne sur le Sheet, recharge (F5), puis **Appli recettes › 1. Installer / vérifier**.
    Google redemande l'autorisation : accepte comme la première fois (Paramètres avancés › Accéder à…).
    Les nouveaux onglets (Foyers, Plannings, Courses, Poids, Avis, Propositions, Prix magasin, Photos)

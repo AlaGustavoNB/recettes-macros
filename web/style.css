@@ -258,7 +258,7 @@ b.code { font-size: 1.6rem; letter-spacing: .12em; font-family: ui-monospace, Me
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 details.danger summary { color: var(--danger); font-weight: 700; }
 nav#nav a { position: relative; }
-nav#nav .dot { position: absolute; top: 6px; left: 55%; background: var(--danger); color: #fff; border-radius: 99px; font-size: .7rem; min-width: 18px; padding: 1px 5px; line-height: 1.3; }
+nav#nav .dot { position: absolute; top: 4px; left: 55%; background: var(--danger); color: #fff; border-radius: 99px; font-size: .75rem; min-width: 18px; padding: 1px 5px; line-height: 1.3; }
 nav#nav .dot[hidden] { display: none; }
 
 /* ---------- Mode sombre automatique ---------- */
@@ -314,3 +314,6 @@ b.small-code { font-size: 1.1rem; }
 .notice.known .row { margin-top: 8px; }
 table.qty tr.chg td { background: var(--read-bg); }
 input.bad { border-color: var(--danger); outline: 3px solid var(--danger); outline-offset: 1px; }
+.done-panel { opacity: .7; }
+.seg.seg-wrap { display: flex; flex-wrap: wrap; }
+.seg.seg-wrap .seg-b { flex: 1 1 30%; min-width: 0; }

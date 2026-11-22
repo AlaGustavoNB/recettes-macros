@@ -51,7 +51,7 @@ web/                   publié sur GitHub Pages (branche gh-pages)
   demo-data.js, demo.js, demo-server.js   mode démo
   guide.html, confidentialite.html
 tests/
-  tests.html           143 tests : calculs + serveur simulé (comptes, inscription, oubli, foyer,
+  tests.html           149 tests : calculs + serveur simulé (comptes, inscription, oubli, foyer,
                        planning, cuisine, avis, propositions, suppression, colonnes calculées intactes)
   audit.js             contrôle d'affichage mobile
 ```
@@ -103,3 +103,26 @@ tests/
 - Lecture d'étiquette : dépend de la netteté ; valeurs toujours à valider.
 - Dictée « 🎤 » : Chrome Android oui ; sur iPhone, utiliser le micro du clavier.
 - Les autres membres du foyer apparaissent dans la liste après « Actualiser » (pas de temps réel).
+
+## Rapidité (v2.7)
+- **Serveur** : pour les actions de lecture (`data`, `foyerWeek`, `dashboard`…), chaque onglet n'est lu
+  qu'une fois par appel (mémoire `READ_CACHE`), toutes colonnes d'un coup. Les actions qui écrivent
+  gardent exactement l'ancien comportement. Les images de l'onglet Photos ne sont lues que quand on les affiche.
+  Un test vérifie qu'aucun onglet n'est lu deux fois dans un même appel.
+- **Démarrage** : le service worker sert l'appli depuis le téléphone (ouverture instantanée même avec un
+  réseau lent) ; une nouvelle version est téléchargée en entier puis l'appli se recharge d'elle-même.
+  Le mode démo (~70 Ko) n'est chargé que si on l'utilise.
+- **Écrans** : totaux des recettes mémorisés ; enregistrement d'un ingrédient affiché tout de suite, Sheet
+  relu en arrière-plan ; lecteur de code-barres préchargé à l'ouverture du formulaire.
+
+## Tickets d'erreur
+- Erreur inattendue chez un utilisateur : message simple + « Envoyer un ticket » (commentaire facultatif).
+  Erreurs « normales » (saisie, réseau, mot de passe) : message explicatif, ticket possible via un petit lien.
+- Ticket → onglet **Tickets** + e-mail à l'admin (propriétaire du script et admins ayant un e-mail) +
+  pastille et onglet « Tickets » dans le tableau de bord (copier le rapport, marquer résolu).
+- Limites : 10 tickets/heure par personne, doublon identique ignoré 10 min. Envoi hors ligne mis en file d'attente.
+
+## Vérifier avant de publier (2 étapes)
+1. `/tests/tests.html` : tous les tests (0 échec).
+2. `/web/index.html?demo=1` à 360 px, console : `fetch('/tests/smoke.js').then(r=>r.text()).then(eval); await smoke()`
+   → parcourt 48 écrans en client et en admin, relève erreurs, erreurs JavaScript et défauts mobiles (`ok: true` attendu).
