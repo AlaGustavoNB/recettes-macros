@@ -6,6 +6,23 @@
   function lastWeight() { var w = S.data.weights || []; return w.length ? w[w.length - 1].kg : null; }
 
   /* ================= Objectifs ================= */
+  // Mêmes limites que le serveur : vérifiées avant l'envoi, avec un message clair par case.
+  var LIMITS = [
+    { id: 'p-annee', key: 'annee', min: 1920, max: 2015, label: 'Année de naissance', ex: '1995' },
+    { id: 'p-taille', key: 'taille', min: 100, max: 250, label: 'Taille', ex: '175 (en cm)' },
+    { id: 'p-poids', key: 'poids', min: 25, max: 400, label: 'Poids', ex: '72 (en kg)' },
+    { id: 'p-seances', key: 'seances', min: 0, max: 21, label: 'Séances de sport', ex: '3' },
+    { id: 'p-gkg', key: 'protGkg', min: 0.8, max: 3.5, label: 'Protéines par kg de poids', ex: '2' },
+    { id: 'p-kcal', key: 'kcal', min: 800, max: 8000, label: 'kcal par jour', ex: '2200' },
+    { id: 'p-prot', key: 'prot', min: 20, max: 500, label: 'Protéines par jour', ex: '140 (en g)' },
+    { id: 'p-repas', key: 'repas', min: 1, max: 8, label: 'Repas par jour', ex: '3' }
+  ];
+  function outOfRange(v) {
+    return LIMITS.filter(function (l) { var x = C.num(v[l.key]); return x !== null && (x < l.min || x > l.max); });
+  }
+  // Protéines par kg saisies comme un total par jour (ex. 110) : on propose de les déplacer.
+  function gkgLooksDaily(v) { var x = C.num(v.protGkg); return x !== null && x > 3.5 && x >= 20 && x <= 500; }
+
   A.route(/^#\/profil$/, function () {
     var p = A.prof() || { objectif: 'Maintien', repas: 3, marge: 10 };
     var first = !A.prof();
@@ -29,8 +46,11 @@
       A.field('Séances de sport / semaine', '<input id="p-seances" type="number" inputmode="numeric" min="0" max="21" value="' + esc(v.seances == null ? '' : v.seances) + '">') +
       A.field('Métier', sel('p-metier', v.metier, [['', '—'], ['assis', 'Plutôt assis'], ['debout', 'Debout / marche'], ['physique', 'Physique']])) +
       A.field('Objectif', sel('p-obj', v.objectif, [['Sèche', 'Sèche (perdre du gras)'], ['Maintien', 'Maintien'], ['Masse', 'Masse (prendre du muscle)']])) +
-      A.field('Protéines (g par kg)', A.numIn('p-gkg', v.protGkg), 'Vide = 2 en sèche, 1,6 en maintien, 1,8 en masse') +
+      A.field('Protéines par kg de poids', A.numIn('p-gkg', v.protGkg, ' placeholder="ex. 2"'), 'Entre 0,8 et 3,5 g par kilo (pas le total du jour). Vide = 2 en sèche, 1,6 en maintien, 1,8 en masse.') +
       '</div>' +
+      (gkgLooksDaily(v) ? '<div class="notice warn" id="p-gkg-warn"><b>' + fmt(C.num(v.protGkg)) + '</b> g par kilo, c’est trop : tu voulais sûrement <b>' + fmt(C.num(v.protGkg)) +
+        ' g de protéines par jour</b> ?<br><button class="btn small" id="p-gkg-move">Oui, le mettre dans « Protéines par jour »</button></div>'
+        : (outOfRange({ protGkg: v.protGkg }).length ? '<div class="notice warn">Protéines par kg : mets une valeur entre 0,8 et 3,5 (ex. 2).</div>' : '')) +
       (tg ? '<div class="notice">Proposition : <b>' + fmt(tg.kcal) + ' kcal</b> et <b>' + fmt(tg.prot) + ' g de protéines</b> par jour ' +
         '<span class="muted small">(métabolisme ' + fmt(tg.bmr) + ' kcal × activité ' + String(tg.factor).replace('.', ',') + (C.norm(v.objectif) === 'seche' ? ' − 20 %' : C.norm(v.objectif) === 'masse' ? ' + 10 %' : '') + ')</span>' +
         '<br><button class="btn small" id="p-use">Utiliser ces valeurs</button></div>'
@@ -62,8 +82,21 @@
       });
       var use = $('#p-use', el);
       if (use) use.onclick = function () { $('#p-kcal').value = tg.kcal; $('#p-prot').value = tg.prot; Store.set(A.pk('profDraft'), read()); A.toast('Valeurs proposées reprises : corrige si besoin'); };
+      var mv = $('#p-gkg-move', el);
+      if (mv) mv.onclick = function () {
+        var d = read(); d.prot = C.num(d.protGkg); d.protGkg = null;
+        Store.set(A.pk('profDraft'), d); A.render(); A.toast('Mis dans « Protéines par jour »');
+      };
       $('#p-save', el).onclick = function () {
         var np = read();
+        $$('.field input', el).forEach(function (i) { i.classList.remove('bad'); });
+        var bads = outOfRange(np);
+        if (bads.length) {
+          var b = bads[0], inp = $('#' + b.id, el);
+          if (inp) { inp.classList.add('bad'); inp.focus(); inp.scrollIntoView({ block: 'center' }); }
+          A.toast(b.label + ' : entre ' + fmt(b.min, 1) + ' et ' + fmt(b.max, 1) + ' (ex. ' + b.ex + ').');
+          return;
+        }
         if (!np.kcal || !np.prot) { A.toast('kcal et protéines par jour sont obligatoires (utilise la proposition si besoin).'); return; }
         var bad = np.exclus.filter(function (n) { return !C.find(S.idx, n); });
         if (bad.length && !confirm('Pas trouvé dans les ingrédients (nom exact) : ' + bad.join(', ') + '. Enregistrer quand même ?')) return;
